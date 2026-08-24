@@ -84,6 +84,11 @@ function openPostgres(url: string): Driver {
     ssl: "require",
     max: Number(process.env.PG_POOL_MAX ?? 1), // Supabase pooler-friendly (serverless)
     prepare: false, // required for Supabase transaction-mode pooling (port 6543)
+    // Serverless hygiene: without these, a connection the pooler silently drops
+    // hangs the next request on this instance until the platform 504s.
+    connect_timeout: 10,
+    idle_timeout: 20,
+    max_lifetime: 60 * 5,
     types: {
       // BIGINT (timestamps, counts) → number; epoch-ms fits well inside 2^53
       bigint: {

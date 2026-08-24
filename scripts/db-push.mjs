@@ -16,7 +16,11 @@ if (!url || !/^postgres/.test(url)) {
 
 const sql = postgres(url, { ssl: "require", max: 1, prepare: false });
 
-const schema = fs.readFileSync("src/lib/schema.pg.sql", "utf8");
+const schema = fs
+  .readFileSync("src/lib/schema.pg.sql", "utf8")
+  .split("\n")
+  .filter((line) => !line.trim().startsWith("--"))
+  .join("\n");
 const statements = schema
   .split(";")
   .map((s) => s.trim())

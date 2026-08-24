@@ -80,35 +80,84 @@ function toDollarParams(sql: string): string {
 }
 
 function openPostgres(url: string): Driver {
-  const sql = postgres(url, {
-    ssl: "require",
-    max: Number(process.env.PG_POOL_MAX ?? 1), // Supabase pooler-friendly (serverless)
-    prepare: false, // required for Supabase transaction-mode pooling (port 6543)
-    // Serverless hygiene: without these, a connection the pooler silently drops
-    // hangs the next request on this instance until the platform 504s.
-    connect_timeout: 10,
-    idle_timeout: 20,
-    max_lifetime: 60 * 5,
-    types: {
-      // BIGINT (timestamps, counts) → number; epoch-ms fits well inside 2^53
-      bigint: {
-        to: 20,
-        from: [20],
-        serialize: (v: unknown) => String(v),
-        parse: (v: string) => Number(v),
+  const mk = () =>
+    postgres(url, {
+      ssl: "require",
+      max: Number(process.env.PG_POOL_MAX ?? 1), // Supabase pooler-friendly (serverless)
+      prepare: false, // required for Supabase transaction-mode pooling (port 6543)
+      connect_timeout: 10,
+      idle_timeout: 20,
+      max_lifetime: 60 * 5,
+      types: {
+        // BIGINT (timestamps, counts) → number; epoch-ms fits well inside 2^53
+        bigint: {
+          to: 20,
+          from: [20],
+          serialize: (v: unknown) => String(v),
+          parse: (v: string) => Number(v),
+        },
       },
-    },
-  });
-  const client = () => txStore.getStore() ?? sql;
+    });
+  let sql = mk();
+
+  // Serverless instances get frozen between requests; a pooled connection the
+  // pooler dropped meanwhile makes the next query hang forever. Cap every
+  // operation, and on the first failure rebuild the client and retry once.
+  const OP_TIMEOUT_MS = 5000;
+  const TX_TIMEOUT_MS = 15000; // whole-transaction budget (finalization loops etc.)
+
+  function capped<T>(p: Promise<T>, ms = OP_TIMEOUT_MS): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("pg_op_timeout")), ms);
+      p.then(
+        (v) => (clearTimeout(t), resolve(v)),
+        (e) => (clearTimeout(t), reject(e))
+      );
+    });
+  }
+
+  async function withRetry<T>(fn: (s: PgSql) => Promise<T>): Promise<T> {
+    const inTx = txStore.getStore();
+    if (inTx) return fn(inTx); // inside a transaction: fail fast, outer retry handles it
+    try {
+      return await capped(fn(sql));
+    } catch {
+      const stale = sql;
+      sql = mk();
+      stale.end({ timeout: 1 }).catch(() => {});
+      return capped(fn(sql));
+    }
+  }
+
   return {
     async all(text, params) {
-      return (await client().unsafe(toDollarParams(text), params as never[])) as unknown as Row[];
+      return (await withRetry(
+        (s) => s.unsafe(toDollarParams(text), params as never[]) as unknown as Promise<Row[]>
+      )) as Row[];
     },
     async run(text, params) {
-      await client().unsafe(toDollarParams(text), params as never[]);
+      await withRetry((s) => s.unsafe(toDollarParams(text), params as never[]) as unknown as Promise<unknown>);
     },
     async begin(fn) {
-      return (await sql.begin((txSql) => txStore.run(txSql as unknown as PgSql, fn))) as never;
+      // Retry the whole transaction once on connection failure (implicit rollback).
+      const attempt = () =>
+        capped(sql.begin((txSql) => txStore.run(txSql as unknown as PgSql, fn)) as Promise<never>, TX_TIMEOUT_MS);
+      try {
+        return await attempt();
+      } catch (e) {
+        const code = (e as { code?: string }).code;
+        const retriable =
+          (e instanceof Error && e.message === "pg_op_timeout") ||
+          code === "CONNECTION_CLOSED" ||
+          code === "CONNECT_TIMEOUT";
+        if (!retriable) {
+          throw e; // domain/SQL error — retrying would just repeat it
+        }
+        const stale = sql;
+        sql = mk();
+        stale.end({ timeout: 1 }).catch(() => {});
+        return attempt();
+      }
     },
   };
 }

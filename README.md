@@ -1,36 +1,78 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CREATORS ARENA 🏆
 
-## Getting Started
+منصة سعودية تحوّل مجتمع صناع المحتوى إلى شبكة زيارات حقيقية للمتاجر الإلكترونية عبر نظام تحديات وجوائز.
 
-First, run the development server:
+**الهوية البصرية:** ثيم داكن Premium بنسبة ‎70% أسود (`#08080A`) / 20% أبيض / 10% بنفسجي.
+الألوان: Primary `#7C3AED`، Electric `#8B5CF6`، Deep `#4C1D95`، Graphite `#17171C`، Soft Gray `#A1A1AA`.
+التدرج الرئيسي: `#A855F7 → #6D28D9`. كل الرموز معرفة في `src/app/globals.css` (`--color-brand-*`).
+الشعار الرسمي: `public/logo.png` (شفاف) + `src/app/icon.png` (favicon) — لتحديثه:
+`node scripts/process-logo.mjs <الملف الجديد.png>`.
+**الخطوط:** Space Grotesk للاتينية والأرقام (الشعار Bold 700، تباعد أوسع في ARENA)
+وIBM Plex Sans Arabic للعربية — الترتيب في `--font-sans` يوزعهما تلقائيًا.
+
+**نموذج العمل:** الأدمن يتفق مع المتاجر خارج المنصة وينشئ الحملات بنفسه — المتجر ليس مستخدمًا ولا يملك حسابًا. صناع المحتوى ينضمون للحملة، كلٌّ برابط تتبع خاص، ويتنافسون على جلب أكبر عدد من الزيارات المؤهلة. المتصدر يفوز بالجائزة.
+
+## التشغيل
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run seed   # بيانات تجريبية (20 Creator + 5 حملات + زيارات واقعية)
+npm run dev    # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### حسابات التجربة
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| الدور | البريد | كلمة المرور |
+|---|---|---|
+| Admin | `admin@tahaddi.local` | `Admin@12345` |
+| Creator | `sara_style@example.com` (وكل حسابات السييد) | `Creator@123` |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### أوامر
 
-## Learn More
+```bash
+npm test        # 24 اختبارًا لمنطق الأعمال (تتبع، احتيال، ترتيب، جوائز)
+npm run build   # بناء الإنتاج
+npm run seed    # يمسح قاعدة البيانات ويعيد الزرع — للتطوير فقط
+```
 
-To learn more about Next.js, take a look at the following resources:
+## البنية
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+راجع [ARCHITECTURE.md](./ARCHITECTURE.md) للتفاصيل الكاملة (المخطط، مسار التتبع، كشف الاحتيال، دورة حياة الحملة).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Next.js 16 + TypeScript + Tailwind v4** — RTL بالكامل، خط IBM Plex Sans Arabic، Mobile-first
+- **قاعدة البيانات:** SQLite عبر `node:sqlite` المدمج في Node 24 — بدون ملفات ثنائية خارجية.
+  الـSQL في [src/lib/schema.sql](./src/lib/schema.sql) قياسي وقابل للنقل إلى PostgreSQL/Supabase
+- **المصادقة:** جلسات JWT (httpOnly) + bcrypt — server-side بالكامل
+- **منطق الأعمال** كله في `src/services/` — الصفحات تعرض فقط
 
-## Deploy on Vercel
+## نظام التتبع
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+`GET /go/:code` — server-side بالكامل:
+تجزئة IP بملح سري (لا يُخزن IP خام) → كشف Bots → Rate limiting → منع التكرار
+(جلسة + IP خلال نافذة قابلة للضبط) → التصنيف `qualified / pending_review / rejected`
+→ تحديث العدادات والإحصائيات اليومية → إشعارات تغير الصدارة → تحويل لرابط المتجر.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+الترتيب يعتمد على الزيارات المؤهلة فقط، وكسر التعادل لمن وصل للعدد أولًا. حساسية
+كشف الاحتيال قابلة للضبط من **لوحة الأدمن → الإعدادات**، والزيارات المشبوهة تُعرض
+في **مراجعة الزيارات** لقرار يدوي.
+
+## قاعدة البيانات — سائقان خلف واجهة واحدة
+
+- **محليًا (تطوير واختبارات):** SQLite عبر `node:sqlite` تلقائيًا — لا إعداد.
+- **الإنتاج (Vercel):** PostgreSQL على Supabase عند ضبط `DATABASE_URL`.
+  المخطط في [schema.pg.sql](./src/lib/schema.pg.sql) والطبقة كلها في [db.ts](./src/lib/db.ts).
+
+## النشر: Supabase + Vercel
+
+1. **Supabase**: أنشئ مشروعًا من [supabase.com](https://supabase.com) → Settings → Database →
+   انسخ رابط **Transaction Pooler** (المنفذ 6543).
+2. **جهّز القاعدة** (مرة واحدة، من جهازك):
+   ```bash
+   DATABASE_URL="postgresql://..." ADMIN_PASSWORD="كلمة-قوية" npm run db:push
+   ```
+   ينشئ الجداول والتصنيفات وحساب الأدمن — idempotent وآمن التكرار.
+3. **Vercel**: اربط المستودع (أو `npx vercel`) واضبط Environment Variables:
+   `DATABASE_URL`, `SESSION_SECRET`, `IP_HASH_SALT`, `NEXT_PUBLIC_APP_URL` (نطاق الموقع).
+4. انشر. رؤوس `X-Forwarded-For` التي يعتمد عليها كشف الاحتيال تصل تلقائيًا على Vercel.
+
+**لا تشغّل `npm run seed` على الإنتاج** — إنه لبيانات SQLite التجريبية المحلية فقط (ويرفض العمل إذا وجد `DATABASE_URL`).

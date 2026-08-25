@@ -172,12 +172,21 @@ export async function ensureLifecycle(c: Campaign): Promise<Campaign> {
   return c;
 }
 
-/** Sweep all campaigns needing a transition (used by dashboards and the tracking route). */
-export async function sweepLifecycles() {
+/**
+ * Sweep all campaigns needing a transition. Rate-limited to once per minute
+ * per instance — every list read calls it, and per-campaign paths (join,
+ * clicks, detail pages) still run their own precise ensureLifecycle.
+ */
+const sweepState = globalThis as unknown as { __tahaddiLastSweep?: number };
+
+export async function sweepLifecycles(force = false) {
+  const ts = now();
+  if (!force && ts - (sweepState.__tahaddiLastSweep ?? 0) < 60_000) return;
+  sweepState.__tahaddiLastSweep = ts;
   const due = await q<Campaign>(
     "SELECT * FROM campaigns WHERE status IN ('scheduled','active') AND (end_at <= ? OR (status = 'scheduled' AND start_at <= ?))",
-    now(),
-    now()
+    ts,
+    ts
   );
   for (const c of due) await ensureLifecycle(c);
   await notifyEndingSoon();

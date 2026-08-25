@@ -15,16 +15,19 @@ export const dynamic = "force-dynamic";
 
 export default async function CreatorHome() {
   const user = await requireCreator();
-  const stats = await creatorHomeStats(user.id);
-  const myCampaigns = await listMyCampaigns(user.id);
+  const [stats, myCampaigns, activeCampaigns, origin] = await Promise.all([
+    creatorHomeStats(user.id),
+    listMyCampaigns(user.id),
+    listActiveCampaigns("newest"),
+    requestOrigin(),
+  ]);
   const myActive = await Promise.all(
     myCampaigns
       .filter((c) => c.status === "active")
       .map(async (c) => ({ ...c, position: await getMyPosition(c.id, user.id) }))
   );
   const joinedIds = new Set(myCampaigns.map((c) => c.id));
-  const available = (await listActiveCampaigns("newest")).filter((c) => !joinedIds.has(c.id));
-  const origin = await requestOrigin();
+  const available = activeCampaigns.filter((c) => !joinedIds.has(c.id));
 
   return (
     <div className="space-y-8">

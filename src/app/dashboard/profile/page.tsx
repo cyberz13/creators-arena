@@ -11,8 +11,8 @@ export const metadata = { title: "ملفي" };
 export default async function ProfilePage() {
   const user = await requireCreator();
   const profile = user.profile!;
-  const stats = await creatorHomeStats(user.id);
-  const category = (await listCategories()).find((c) => c.id === profile.category_id);
+  const [stats, categories] = await Promise.all([creatorHomeStats(user.id), listCategories()]);
+  const category = categories.find((c) => c.id === profile.category_id);
 
   const socials = [
     { label: "TikTok", value: profile.tiktok },

@@ -14,11 +14,13 @@ export const metadata = { title: "لوحة الإدارة" };
 
 export default async function AdminHome() {
   await sweepLifecycles();
-  const o = await adminOverview();
-  const daily = await dailyVisits(undefined, 30);
-  const sources = await trafficSources();
-  const creators = await topCreators(8);
-  const campaigns = await topCampaigns(8);
+  const [o, daily, sources, creators, campaigns] = await Promise.all([
+    adminOverview(),
+    dailyVisits(undefined, 30),
+    trafficSources(),
+    topCreators(8),
+    topCampaigns(8),
+  ]);
 
   return (
     <div className="space-y-6">

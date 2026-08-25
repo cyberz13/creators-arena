@@ -15,31 +15,31 @@ export interface AdminOverview {
 }
 
 export async function adminOverview(): Promise<AdminOverview> {
-  const creators = (await one<{ c: number }>("SELECT COUNT(*) AS c FROM users WHERE role = 'creator'"))!.c;
-  const activeCampaigns = (await one<{ c: number }>(
-    "SELECT COUNT(*) AS c FROM campaigns WHERE status = 'active'"
-  ))!.c;
-  const endedCampaigns = (await one<{ c: number }>(
-    "SELECT COUNT(*) AS c FROM campaigns WHERE status = 'ended'"
-  ))!.c;
-  const clicks = (await one<{ total: number; qualified: number; rejected: number; pending: number }>(
-    `SELECT COUNT(*) AS total,
-       COALESCE(SUM(CASE WHEN status = 'qualified' THEN 1 ELSE 0 END), 0) AS qualified,
-       COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected,
-       COALESCE(SUM(CASE WHEN status = 'pending_review' THEN 1 ELSE 0 END), 0) AS pending
-     FROM clicks`
-  ))!;
-  const uniqueVisitors = (await one<{ c: number }>(
-    "SELECT COUNT(DISTINCT session_id) AS c FROM clicks"
-  ))!.c;
-  const prizes = (await one<{ total: number; paid: number }>(
-    `SELECT COALESCE(SUM(CASE WHEN status != 'rejected' THEN amount ELSE 0 END),0) AS total,
-            COALESCE(SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END),0) AS paid
-     FROM payouts`
-  ))!;
-  const winners = (await one<{ c: number }>(
-    "SELECT COUNT(*) AS c FROM campaign_participants WHERE is_winner = 1"
-  ))!.c;
+  const [creatorsRow, activeRow, endedRow, clicks, uniqueRow, prizes, winnersRow] =
+    await Promise.all([
+      one<{ c: number }>("SELECT COUNT(*) AS c FROM users WHERE role = 'creator'"),
+      one<{ c: number }>("SELECT COUNT(*) AS c FROM campaigns WHERE status = 'active'"),
+      one<{ c: number }>("SELECT COUNT(*) AS c FROM campaigns WHERE status = 'ended'"),
+      one<{ total: number; qualified: number; rejected: number; pending: number }>(
+        `SELECT COUNT(*) AS total,
+           COALESCE(SUM(CASE WHEN status = 'qualified' THEN 1 ELSE 0 END), 0) AS qualified,
+           COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected,
+           COALESCE(SUM(CASE WHEN status = 'pending_review' THEN 1 ELSE 0 END), 0) AS pending
+         FROM clicks`
+      ).then((r) => r!),
+      one<{ c: number }>("SELECT COUNT(DISTINCT session_id) AS c FROM clicks"),
+      one<{ total: number; paid: number }>(
+        `SELECT COALESCE(SUM(CASE WHEN status != 'rejected' THEN amount ELSE 0 END),0) AS total,
+                COALESCE(SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END),0) AS paid
+         FROM payouts`
+      ).then((r) => r!),
+      one<{ c: number }>("SELECT COUNT(*) AS c FROM campaign_participants WHERE is_winner = 1"),
+    ]);
+  const creators = creatorsRow!.c;
+  const activeCampaigns = activeRow!.c;
+  const endedCampaigns = endedRow!.c;
+  const uniqueVisitors = uniqueRow!.c;
+  const winners = winnersRow!.c;
   return {
     creators,
     activeCampaigns,

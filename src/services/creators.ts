@@ -184,24 +184,26 @@ export interface CreatorHomeStats {
 }
 
 export async function creatorHomeStats(userId: string): Promise<CreatorHomeStats> {
-  const agg = (await one<{ tq: number; tc: number; wins: number }>(
-    `SELECT COALESCE(SUM(qualified_count),0) AS tq, COUNT(*) AS tc,
-            COALESCE(SUM(is_winner),0) AS wins
-     FROM campaign_participants WHERE user_id = ?`,
-    userId
-  ))!;
-  const active = (await one<{ c: number }>(
-    `SELECT COUNT(*) AS c FROM campaign_participants p
-     JOIN campaigns c ON c.id = p.campaign_id
-     WHERE p.user_id = ? AND c.status = 'active'`,
-    userId
-  ))!;
-  const prizes = (await one<{ total: number; paid: number }>(
-    `SELECT COALESCE(SUM(amount),0) AS total,
-            COALESCE(SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END),0) AS paid
-     FROM payouts WHERE user_id = ? AND status != 'rejected'`,
-    userId
-  ))!;
+  const [agg, active, prizes] = await Promise.all([
+    one<{ tq: number; tc: number; wins: number }>(
+      `SELECT COALESCE(SUM(qualified_count),0) AS tq, COUNT(*) AS tc,
+              COALESCE(SUM(is_winner),0) AS wins
+       FROM campaign_participants WHERE user_id = ?`,
+      userId
+    ).then((r) => r!),
+    one<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM campaign_participants p
+       JOIN campaigns c ON c.id = p.campaign_id
+       WHERE p.user_id = ? AND c.status = 'active'`,
+      userId
+    ).then((r) => r!),
+    one<{ total: number; paid: number }>(
+      `SELECT COALESCE(SUM(amount),0) AS total,
+              COALESCE(SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END),0) AS paid
+       FROM payouts WHERE user_id = ? AND status != 'rejected'`,
+      userId
+    ).then((r) => r!),
+  ]);
   return {
     totalQualified: agg.tq,
     activeCampaigns: active.c,

@@ -17,7 +17,8 @@ import { Countdown } from "@/components/countdown";
 import { CopyLink } from "@/components/copy-link";
 import { JoinButton } from "@/components/join-button";
 import { Leaderboard } from "@/components/leaderboard";
-import { appUrl, formatNumber, formatSAR } from "@/lib/utils";
+import { formatNumber, formatSAR } from "@/lib/utils";
+import { requestOrigin } from "@/lib/origin";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
   const myLink = user?.role === "creator" ? await getTrackingLink(id, user.id) : undefined;
   const winners =
     campaign.status === "ended" ? (await listPayouts()).filter((p) => p.campaign_id === id) : [];
+  const origin = await requestOrigin();
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
@@ -146,7 +148,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
           ) : myLink ? (
             <div>
               <p className="mb-3 font-bold text-white">🔗 رابطك الخاص — انشره الآن</p>
-              <CopyLink url={`${appUrl()}/go/${myLink.code}`} title={campaign.title} />
+              <CopyLink url={`${origin}/go/${myLink.code}`} title={campaign.title} />
               <p className="mt-3 text-xs text-zinc-500">
                 كل زيارة حقيقية عبر رابطك تُحتسب لك في الترتيب. الزيارات المكررة والوهمية لا تُحتسب.
               </p>

@@ -8,7 +8,8 @@ import { StatCard } from "@/components/ui/stat-card";
 import { Card } from "@/components/ui/card";
 import { CampaignCard } from "@/components/campaign-card";
 import { CopyLink } from "@/components/copy-link";
-import { appUrl, formatNumber, formatRemaining, formatSAR } from "@/lib/utils";
+import { formatNumber, formatRemaining, formatSAR } from "@/lib/utils";
+import { requestOrigin } from "@/lib/origin";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,7 @@ export default async function CreatorHome() {
   );
   const joinedIds = new Set(myCampaigns.map((c) => c.id));
   const available = (await listActiveCampaigns("newest")).filter((c) => !joinedIds.has(c.id));
+  const origin = await requestOrigin();
 
   return (
     <div className="space-y-8">
@@ -72,7 +74,7 @@ export default async function CreatorHome() {
                     )}
                   </div>
                   <div className="mt-3 border-t border-white/[0.06] pt-3">
-                    <CopyLink url={`${appUrl()}/go/${c.tracking_code}`} title={c.title} />
+                    <CopyLink url={`${origin}/go/${c.tracking_code}`} title={c.title} />
                   </div>
                   <p className="tabular mt-2 text-sm text-zinc-400">
                     زياراتك المؤهلة: <span className="font-bold text-white">{formatNumber(c.my_qualified)}</span>

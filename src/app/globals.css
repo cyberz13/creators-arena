@@ -1,35 +1,46 @@
 @import "tailwindcss";
 
-/* CREATORS ARENA — dark premium identity
-   70% Arena Black · 20% White · 10% Purple
-   Primary #7C3AED · Electric #8B5CF6 · Deep #4C1D95
-   Gradient: #A855F7 → #6D28D9 */
+/* CREATORS ARENA — Nocturne design system (from Claude Design)
+   bg #161826 · surface #232532 · accent (blurple) #9184d9
+   Fonts: Tajawal (Arabic+Latin) with Inter fallback */
 @theme {
-  /* Space Grotesk first: it carries Latin + digits; Arabic glyphs fall through to IBM Plex */
-  --font-sans: var(--font-latin), var(--font-arabic), "IBM Plex Sans Arabic", "Segoe UI", system-ui, sans-serif;
+  --font-sans: var(--font-tajawal), var(--font-inter), "Tajawal", "Inter", system-ui, sans-serif;
 
-  --color-brand-50: #f5f3ff;
-  --color-brand-100: #ede9fe;
-  --color-brand-200: #ddd6fe;
-  --color-brand-300: #c4b5fd;
-  --color-brand-400: #a78bfa;
-  --color-brand-500: #8b5cf6;
-  --color-brand-600: #7c3aed;
-  --color-brand-700: #6d28d9;
-  --color-brand-800: #5b21b6;
-  --color-brand-900: #4c1d95;
+  /* accent ramp (Nocturne) mapped onto the app's brand scale */
+  --color-brand-50: #f5f4ff;
+  --color-brand-100: #f5f4ff;
+  --color-brand-200: #e7e5fe;
+  --color-brand-300: #d2cefd;
+  --color-brand-400: #b5abfc;
+  --color-brand-500: #9184d9;
+  --color-brand-600: #796cbf;
+  --color-brand-700: #5d5294;
+  --color-brand-800: #423a6a;
+  --color-brand-900: #2b2741;
 
-  --color-arena-black: #08080a;
-  --color-graphite: #17171c;
-  --color-soft-gray: #a1a1aa;
+  /* neutrals: remap zinc onto the Nocturne neutral ramp so existing
+     text-zinc-* classes pick up the system automatically */
+  --color-zinc-100: #f3f5fe;
+  --color-zinc-200: #e4e7f5;
+  --color-zinc-300: #cfd3e5;
+  --color-zinc-400: #b2b6ca;
+  --color-zinc-500: #9397ab;
+  --color-zinc-600: #75798c;
+  --color-zinc-700: #595d6c;
+  --color-zinc-800: #3f424d;
+  --color-zinc-900: #292b31;
 
-  --color-gold-400: #fbbf24;
-  --color-gold-500: #f59e0b;
-  --color-gold-600: #d97706;
+  /* surfaces */
+  --color-canvas: #161826;
+  --color-surface: #232532;
+  --color-raise: #2c2f40;
+  --color-section: #262a60;
+  --color-section-glow: #353b80;
 }
 
 :root {
   color-scheme: dark;
+  --divider: color-mix(in srgb, #e9e9ed 16%, transparent);
 }
 
 html {
@@ -37,59 +48,111 @@ html {
 }
 
 body {
-  background: #08080a;
-  color: #fafafa;
+  background: #161826;
+  color: #e9e9ed;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
 /* Latin digits keep their shape inside Arabic text */
-.tabular {
+.tabular,
+.num {
   font-variant-numeric: tabular-nums;
+}
+.num {
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
 ::selection {
-  background: rgba(139, 92, 246, 0.4);
+  background: color-mix(in srgb, #9184d9 30%, transparent);
 }
 
-/* identity gradient helper */
-.arena-gradient {
-  background-image: linear-gradient(to left, #a855f7, #6d28d9);
+.lighten {
+  mix-blend-mode: lighten;
+  background-color: transparent;
 }
 
-.arena-gradient-text {
-  background-image: linear-gradient(to left, #a855f7, #8b5cf6);
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
-}
-
+/* ── Nocturne motion (from the design) ─────────────────────────── */
 @keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes wordIn {
+  from { opacity: 0; transform: translateY(20px); filter: blur(8px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+@keyframes glowA {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-5%, 4%) scale(1.16); }
+}
+@keyframes glowB {
+  0%, 100% { transform: translate(0, 0) scale(1.12); }
+  50% { transform: translate(6%, -5%) scale(1); }
+}
+@keyframes pulseDot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(145, 132, 217, 0.5); }
+  70% { box-shadow: 0 0 0 9px rgba(145, 132, 217, 0); }
+}
+@keyframes barGrow {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@keyframes orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes gridPan {
+  from { transform: translateY(0); }
+  to { transform: translateY(-64px); }
+}
+@keyframes shine {
+  0% { background-position: 200% 50%; }
+  100% { background-position: -100% 50%; }
+}
+@keyframes caret {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+@keyframes travel {
+  from { right: 0; }
+  to { right: 100%; }
+}
+@keyframes nodePop {
+  from { opacity: 0; transform: scale(0.3); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes stepIn {
+  from { opacity: 0; transform: translateY(30px) rotate(-1.2deg); }
+  to { opacity: 1; transform: none; }
 }
 
 .animate-rise {
-  animation: rise 0.4s ease-out both;
+  animation: rise 0.8s cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
 
-@keyframes pulse-soft {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.55;
+/* Scroll-driven reveal; browsers without animation-timeline just play it once. */
+.reveal {
+  animation: rise 0.8s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+@supports (animation-timeline: view()) {
+  .reveal {
+    animation-timeline: view();
+    animation-range: entry 2% cover 24%;
   }
 }
 
-.animate-pulse-soft {
-  animation: pulse-soft 2s ease-in-out infinite;
+/* spotlight hover ground (paired with the SpotCard client wrapper) */
+.spot-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--sp, 0);
+  transition: opacity 0.35s;
+  background: radial-gradient(
+    240px circle at var(--mx, 50%) var(--my, 50%),
+    color-mix(in srgb, #9184d9 16%, transparent),
+    transparent 70%
+  );
 }

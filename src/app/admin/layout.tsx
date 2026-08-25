@@ -27,7 +27,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   return (
     <div className="min-h-dvh md:flex">
       {/* Sidebar (desktop) */}
-      <aside className="hidden w-60 shrink-0 flex-col border-e border-white/10 bg-[#17171C] md:flex">
+      <aside className="hidden w-60 shrink-0 flex-col border-e border-white/10 bg-surface md:flex">
         <div className="flex h-16 items-center gap-2.5 border-b border-white/[0.06] px-5">
           <LogoMark className="h-6" />
           <div>
@@ -58,7 +58,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
       {/* Mobile top bar */}
       <div className="flex-1">
-        <header className="sticky top-0 z-40 border-b border-white/10 bg-[#0B0B0F]/90 backdrop-blur md:hidden">
+        <header className="sticky top-0 z-40 border-b border-white/10 bg-canvas/90 backdrop-blur md:hidden">
           <div className="flex h-14 items-center justify-between px-4">
             <p className="font-bold text-white">لوحة الإدارة</p>
             <form action={logoutAction}>
@@ -70,7 +70,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               <Link
                 key={n.href}
                 href={n.href}
-                className="whitespace-nowrap rounded-full border border-white/10 bg-[#17171C] px-3 py-1.5 text-xs font-semibold text-zinc-400"
+                className="whitespace-nowrap rounded-full border border-white/10 bg-surface px-3 py-1.5 text-xs font-semibold text-zinc-400"
               >
                 {n.label}
               </Link>

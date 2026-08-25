@@ -18,7 +18,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   return (
     <div className="min-h-dvh pb-20 md:pb-0">
-      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#0B0B0F]/85 backdrop-blur">
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-canvas/85 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-4">
           <Link href="/dashboard">
             <Logo />
@@ -55,7 +55,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       <main className="mx-auto max-w-5xl px-4 py-6">{children}</main>
 
       {/* Mobile bottom nav */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-[#0B0B0F]/95 backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-canvas/95 backdrop-blur md:hidden">
         <div className="grid grid-cols-4">
           {NAV.map((n) => (
             <Link

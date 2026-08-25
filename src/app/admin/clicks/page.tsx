@@ -46,7 +46,7 @@ export default async function AdminClicksPage({
             href={`/admin/clicks?tab=${t.key}`}
             className={cn(
               "rounded-full px-4 py-1.5 text-sm font-semibold",
-              activeTab === t.key ? "bg-brand-600 text-white" : "border border-white/15 bg-[#17171C] text-zinc-400"
+              activeTab === t.key ? "bg-brand-600 text-white" : "border border-white/15 bg-surface text-zinc-400"
             )}
           >
             {t.label}

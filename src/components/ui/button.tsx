@@ -8,11 +8,11 @@ const buttonVariants = cva(
     variants: {
       variant: {
         primary:
-          "bg-gradient-to-l from-[#A855F7] to-[#6D28D9] text-white shadow-sm shadow-brand-600/40 hover:from-[#9333EA] hover:to-[#5B21B6]",
+          "bg-brand-500 text-[#14121f] shadow-sm shadow-brand-500/30 hover:bg-brand-400",
         secondary:
           "bg-brand-500/10 text-brand-300 hover:bg-brand-500/15 border border-brand-500/30",
         outline:
-          "border border-white/15 bg-[#17171C] text-zinc-300 hover:bg-white/5",
+          "border border-white/15 bg-surface text-zinc-300 hover:bg-white/5",
         ghost: "text-zinc-400 hover:bg-white/10 hover:text-white",
         destructive: "bg-red-600 text-white hover:bg-red-700",
         gold: "bg-gradient-to-l from-amber-500 to-amber-400 text-amber-950 shadow-sm shadow-amber-500/30 hover:from-amber-600 hover:to-amber-500",

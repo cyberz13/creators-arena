@@ -1,19 +1,19 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Sans_Arabic, Space_Grotesk } from "next/font/google";
+import { Tajawal, Inter } from "next/font/google";
 import "./globals.css";
 
-const arabicFont = IBM_Plex_Sans_Arabic({
+// Nocturne design system faces: Tajawal carries Arabic + Latin, Inter backs it up.
+const tajawal = Tajawal({
   subsets: ["arabic", "latin"],
-  weight: ["300", "400", "500", "600", "700"],
-  variable: "--font-arabic",
+  weight: ["300", "400", "500", "700", "800"],
+  variable: "--font-tajawal",
   display: "swap",
 });
 
-// Brand Latin face — no Arabic glyphs, so Arabic text falls through to IBM Plex
-const latinFont = Space_Grotesk({
+const inter = Inter({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
-  variable: "--font-latin",
+  variable: "--font-inter",
   display: "swap",
 });
 
@@ -28,7 +28,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ar" dir="rtl" className={`${arabicFont.variable} ${latinFont.variable}`}>
+    <html lang="ar" dir="rtl" className={`${tajawal.variable} ${inter.variable}`}>
       <body className="min-h-dvh">{children}</body>
     </html>
   );

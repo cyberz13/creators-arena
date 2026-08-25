@@ -98,15 +98,49 @@ export async function trafficSources(
 }
 
 export async function topCreators(limit = 10) {
-  return q<{ user_id: string; username: string; name: string; qualified_total: number; wins: number }>(
-    `SELECT p.user_id, cp.username, cp.name,
+  return q<{
+    user_id: string;
+    username: string;
+    name: string;
+    qualified_total: number;
+    wins: number;
+    followers_count: number;
+    category_name: string | null;
+  }>(
+    `SELECT p.user_id, cp.username, cp.name, cp.followers_count, cat.name_ar AS category_name,
        COALESCE(SUM(p.qualified_count),0) AS qualified_total,
        COALESCE(SUM(p.is_winner),0) AS wins
      FROM campaign_participants p
      JOIN creator_profiles cp ON cp.user_id = p.user_id
-     GROUP BY p.user_id, cp.username, cp.name ORDER BY qualified_total DESC LIMIT ?`,
+     LEFT JOIN categories cat ON cat.id = cp.category_id
+     GROUP BY p.user_id, cp.username, cp.name, cp.followers_count, cat.name_ar
+     ORDER BY qualified_total DESC LIMIT ?`,
     limit
   );
+}
+
+/** Lightweight public aggregates for the marketing pages. */
+export interface PublicStats {
+  creators: number;
+  endedCampaigns: number;
+  qualifiedVisits: number;
+  prizeMoney: number;
+}
+
+export async function publicStats(): Promise<PublicStats> {
+  const row = (await one<{ creators: number; ended: number; qualified: number; prizes: number }>(
+    `SELECT
+       (SELECT COUNT(*) FROM users WHERE role = 'creator') AS creators,
+       (SELECT COUNT(*) FROM campaigns WHERE status = 'ended') AS ended,
+       (SELECT COALESCE(SUM(qualified_count),0) FROM campaign_participants) AS qualified,
+       (SELECT COALESCE(SUM(amount),0) FROM payouts WHERE status != 'rejected') AS prizes`
+  ))!;
+  return {
+    creators: row.creators,
+    endedCampaigns: row.ended,
+    qualifiedVisits: row.qualified,
+    prizeMoney: row.prizes,
+  };
 }
 
 export async function topCampaigns(limit = 10) {

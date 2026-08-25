@@ -16,21 +16,21 @@ import {
 } from "recharts";
 import type { DailyPoint } from "@/services/analytics";
 
-// CREATORS ARENA identity colors
-const PURPLE = "#8B5CF6";
-const GRID = "#26262E";
-const MUTED = "#71717A";
-const AXIS_TICK = { fontSize: 11, fill: "#A1A1AA" };
+// CREATORS ARENA — Nocturne palette
+const PURPLE = "#9184d9";
+const GRID = "#2f3247";
+const MUTED = "#75798c";
+const AXIS_TICK = { fontSize: 11, fill: "#9397ab" };
 
 const TOOLTIP_STYLE = {
   contentStyle: {
-    background: "#17171C",
-    border: "1px solid rgba(255,255,255,0.1)",
+    background: "#232532",
+    border: "1px solid rgba(233,233,237,0.16)",
     borderRadius: 12,
-    color: "#FAFAFA",
+    color: "#e9e9ed",
   },
-  labelStyle: { color: "#A1A1AA" },
-  itemStyle: { color: "#FAFAFA" },
+  labelStyle: { color: "#9397ab" },
+  itemStyle: { color: "#e9e9ed" },
 } as const;
 
 export function DailyVisitsChart({ data }: { data: DailyPoint[] }) {
@@ -101,7 +101,7 @@ export function SourcesChart({ data }: { data: { source: string; count: number }
               innerRadius={40}
               outerRadius={70}
               paddingAngle={3}
-              stroke="#08080A"
+              stroke="#161826"
             >
               {data.map((d) => (
                 <Cell key={d.source} fill={SOURCE_COLORS[d.source] ?? MUTED} />

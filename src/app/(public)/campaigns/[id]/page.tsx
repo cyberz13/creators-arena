@@ -39,7 +39,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
     <div className="mx-auto max-w-4xl px-4 py-8">
       {/* Header */}
       <Card className="overflow-hidden">
-        <div className="relative bg-[#08080A] p-6 text-white sm:p-8">
+        <div className="relative bg-canvas p-6 text-white sm:p-8">
           <div className="absolute inset-0 [background-image:radial-gradient(circle_at_15%_20%,rgba(139,92,246,0.4)_0,transparent_50%)]" />
           <div className="relative">
             <div className="flex flex-wrap items-center gap-2">
@@ -113,7 +113,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
               {winners
                 .sort((a, b) => a.prize_rank - b.prize_rank)
                 .map((w) => (
-                  <div key={w.id} className="flex items-center justify-between rounded-xl bg-[#17171C] p-3 shadow-sm">
+                  <div key={w.id} className="flex items-center justify-between rounded-xl bg-surface p-3 shadow-sm">
                     <span className="font-bold text-white">
                       {w.prize_rank === 1 ? "🥇" : w.prize_rank === 2 ? "🥈" : "🥉"} @{w.username}
                     </span>

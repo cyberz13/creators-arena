@@ -1,10 +1,8 @@
 import { cn } from "@/lib/utils";
 
 /**
- * Official CREATORS ARENA mark — processed from the brand PNG
- * (public/logo.png: cropped, black background made transparent).
- * next/image is intentionally not used: its optimizer needs the native
- * `sharp` binary, which is blocked on this machine.
+ * Official CREATORS ARENA mark (public/logo.png: transparent, from the brand PNG).
+ * Wordmark styling follows the Nocturne design: 0.08em tracking, ARENA in accent.
  */
 export function LogoMark({ className }: { className?: string }) {
   return (
@@ -12,7 +10,7 @@ export function LogoMark({ className }: { className?: string }) {
     <img
       src="/logo.png"
       alt="CREATORS ARENA"
-      className={cn("h-8 w-auto select-none", className)}
+      className={cn("h-8 w-auto select-none lighten", className)}
       draggable={false}
     />
   );
@@ -20,9 +18,9 @@ export function LogoMark({ className }: { className?: string }) {
 
 export function LogoWordmark({ className }: { className?: string }) {
   return (
-    <span className={cn("font-bold tracking-wide", className)} dir="ltr">
-      <span className="text-white">CREATORS</span>{" "}
-      <span className="arena-gradient-text tracking-[0.14em]">ARENA</span>
+    <span className={cn("font-semibold tracking-[0.08em]", className)} dir="ltr">
+      <span className="text-[#e9e9ed]">CREATORS</span>{" "}
+      <span className="text-brand-500">ARENA</span>
     </span>
   );
 }
@@ -30,8 +28,8 @@ export function LogoWordmark({ className }: { className?: string }) {
 export function Logo({ compact = false }: { compact?: boolean }) {
   return (
     <span className="flex items-center gap-2.5">
-      <LogoMark className="h-7" />
-      {!compact && <LogoWordmark className="text-base sm:text-lg" />}
+      <LogoMark className="h-[34px]" />
+      {!compact && <LogoWordmark className="text-base" />}
     </span>
   );
 }

@@ -44,7 +44,7 @@ export function Countdown({ endAt, compact = false }: { endAt: number; compact?:
       {cells.map((c) => (
         <div
           key={c.l}
-          className="grid min-w-14 place-items-center rounded-xl bg-[#1D1D24] px-2 py-2 text-white"
+          className="grid min-w-14 place-items-center rounded-xl bg-raise px-2 py-2 text-white"
         >
           <span className="tabular text-xl font-bold">{String(c.v).padStart(2, "0")}</span>
           <span className="text-[10px] text-zinc-400">{c.l}</span>

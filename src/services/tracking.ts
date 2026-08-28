@@ -1,4 +1,4 @@
-import { id, one, q, run, tx } from "@/lib/db";
+import { id, one, q, run, tx, txSerializeOn } from "@/lib/db";
 import { dayKey } from "@/lib/utils";
 import type { Click, ClickStatus, TrackingLink } from "@/lib/types";
 import { classifyClick, detectSource } from "./fraud";
@@ -35,23 +35,27 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
   let campaign = (await getCampaign(link.campaign_id))!;
   campaign = await ensureLifecycle(campaign);
 
-  let verdict;
-  if (campaign.status !== "active") {
-    verdict = { status: "rejected" as const, reason: "campaign_inactive" };
-  } else {
-    verdict = await classifyClick({
-      campaignId: link.campaign_id,
-      ipHash: input.ipHash,
-      sessionId: input.sessionId,
-      userAgent: input.userAgent,
-      nowMs,
-    });
-  }
+  // Classify INSIDE the transaction, behind per-key advisory locks:
+  // concurrent clicks from the same ip/session serialize here, so the
+  // dedup check can never race its own write (the leak a production
+  // audit caught: several "qualified" from one IP within one minute).
+  const { verdict, previousLeader } = await tx(async () => {
+    await txSerializeOn(`click-ip:${link.campaign_id}:${input.ipHash}`);
+    await txSerializeOn(`click-sess:${link.campaign_id}:${input.sessionId}`);
 
-  const previousLeader =
-    verdict.status === "qualified" ? await currentLeader(link.campaign_id) : null;
+    const v =
+      campaign.status !== "active"
+        ? { status: "rejected" as const, reason: "campaign_inactive" }
+        : await classifyClick({
+            campaignId: link.campaign_id,
+            ipHash: input.ipHash,
+            sessionId: input.sessionId,
+            userAgent: input.userAgent,
+            nowMs,
+          });
 
-  await tx(async () => {
+    const prev = v.status === "qualified" ? await currentLeader(link.campaign_id) : null;
+
     await run(
       `INSERT INTO clicks (id, tracking_link_id, campaign_id, user_id, status, reject_reason,
          ip_hash, session_id, user_agent, referer, source, created_at)
@@ -60,8 +64,8 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
       link.id,
       link.campaign_id,
       link.user_id,
-      verdict.status,
-      verdict.reason,
+      v.status,
+      v.reason,
       input.ipHash,
       input.sessionId,
       input.userAgent,
@@ -69,7 +73,8 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
       detectSource(input.referer, input.utmSource),
       nowMs
     );
-    await applyCounterDelta(link, verdict.status, nowMs, +1);
+    await applyCounterDelta(link, v.status, nowMs, +1);
+    return { verdict: v, previousLeader: prev };
   });
 
   if (verdict.status === "qualified") {

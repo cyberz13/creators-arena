@@ -200,5 +200,17 @@ export async function tx<T>(fn: () => Promise<T>): Promise<T> {
   return getDriver().begin(fn);
 }
 
+/**
+ * Serialize concurrent transactions contending on the same logical key
+ * (e.g. campaign+ip for click dedup). Postgres: advisory xact lock —
+ * released automatically at commit/rollback. SQLite dev: no-op, its
+ * single connection already serializes transactions.
+ */
+export async function txSerializeOn(key: string): Promise<void> {
+  if (process.env.DATABASE_URL && /^postgres/.test(process.env.DATABASE_URL)) {
+    await run("SELECT pg_advisory_xact_lock(hashtext(?))", key);
+  }
+}
+
 export const id = () => crypto.randomUUID();
 export const now = () => Date.now();

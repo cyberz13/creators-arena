@@ -58,10 +58,12 @@ export function migrate(db: DatabaseSync) {
   const schema = fs.readFileSync(path.join(process.cwd(), "src", "lib", "schema.sql"), "utf8");
   // Additive migrations FIRST: schema.sql's indexes may reference columns that
   // CREATE TABLE IF NOT EXISTS won't add to a pre-existing table.
-  try {
-    db.exec("ALTER TABLE clicks ADD COLUMN device_hash TEXT");
-  } catch {
-    /* column already exists, or table not created yet (fresh DB) */
+  for (const col of ["device_hash TEXT", "geo_country TEXT", "geo_city TEXT", "signals TEXT"]) {
+    try {
+      db.exec(`ALTER TABLE clicks ADD COLUMN ${col}`);
+    } catch {
+      /* column already exists, or table not created yet (fresh DB) */
+    }
   }
   db.exec(schema);
 }

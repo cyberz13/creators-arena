@@ -123,6 +123,7 @@ export async function updateSettingsAction(_prev: FormState, formData: FormData)
     "rate_limit_per_minute",
     "review_threshold_24h",
     "max_devices_per_ip_24h",
+    "ip_intel_enabled",
   ];
   for (const key of keys) {
     const value = Number(formData.get(key));

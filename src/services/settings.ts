@@ -11,6 +11,8 @@ export const DEFAULT_SETTINGS = {
   // CGNAT fairness cap: distinct qualified devices allowed per IP per campaign
   // per 24h before further ones go to pending_review.
   max_devices_per_ip_24h: 5,
+  // 1 = send clicks from VPN/proxy/Tor/datacenter IPs to pending_review.
+  ip_intel_enabled: 1,
 } as const;
 
 export type SettingKey = keyof typeof DEFAULT_SETTINGS;
@@ -35,5 +37,6 @@ export async function getAllSettings(): Promise<Record<SettingKey, number>> {
     rate_limit_per_minute: await getSetting("rate_limit_per_minute"),
     review_threshold_24h: await getSetting("review_threshold_24h"),
     max_devices_per_ip_24h: await getSetting("max_devices_per_ip_24h"),
+    ip_intel_enabled: await getSetting("ip_intel_enabled"),
   };
 }

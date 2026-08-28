@@ -108,6 +108,9 @@ CREATE TABLE IF NOT EXISTS clicks (
   referer          TEXT,
   source           TEXT NOT NULL DEFAULT 'direct'
                    CHECK (source IN ('tiktok','instagram','snapchat','direct','other')),
+  geo_country      TEXT,
+  geo_city         TEXT,
+  signals          TEXT,
   created_at       INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_clicks_campaign ON clicks(campaign_id);
@@ -118,6 +121,17 @@ CREATE INDEX IF NOT EXISTS idx_clicks_session ON clicks(campaign_id, session_id,
 CREATE INDEX IF NOT EXISTS idx_clicks_device ON clicks(campaign_id, device_hash, created_at);
 CREATE INDEX IF NOT EXISTS idx_clicks_status ON clicks(status);
 CREATE INDEX IF NOT EXISTS idx_clicks_created ON clicks(created_at);
+
+-- Cached network intelligence per hashed IP (VPN / datacenter / proxy detection).
+CREATE TABLE IF NOT EXISTS ip_intel (
+  ip_hash    TEXT PRIMARY KEY,
+  risky      INTEGER NOT NULL DEFAULT 0,
+  flags      TEXT,
+  asn_org    TEXT,
+  country    TEXT,
+  city       TEXT,
+  checked_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS campaign_daily_stats (
   id          TEXT PRIMARY KEY,

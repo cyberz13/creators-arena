@@ -95,9 +95,13 @@ export interface Click {
   reject_reason: string | null;
   ip_hash: string;
   session_id: string;
+  device_hash: string | null;
   user_agent: string;
   referer: string | null;
   source: TrafficSource;
+  geo_country: string | null;
+  geo_city: string | null;
+  signals: string | null;
   created_at: number;
 }
 

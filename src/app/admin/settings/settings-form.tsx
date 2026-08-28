@@ -29,6 +29,11 @@ const FIELDS = [
     label: "أقصى أجهزة مختلفة لكل IP في اليوم",
     hint: "عدالة شبكات الجوال: أجهزة متعددة خلف نفس الشبكة تُحتسب حتى هذا الحد، وما بعده يذهب للمراجعة",
   },
+  {
+    key: "ip_intel_enabled",
+    label: "فحص الشبكات المشبوهة (VPN / مراكز بيانات)",
+    hint: "1 = زيارات VPN والبروكسي ومراكز البيانات تذهب للمراجعة، 0 = إيقاف الفحص",
+  },
 ] as const;
 
 export function SettingsForm({ settings }: { settings: Record<string, number> }) {

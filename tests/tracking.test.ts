@@ -3,7 +3,7 @@ import { freshDb, adminId, makeCreator, makeCampaign, visitor } from "./helpers"
 import { joinCampaign, getParticipant } from "@/services/campaigns";
 import { recordClick, reviewClick } from "@/services/tracking";
 import { setSetting } from "@/services/settings";
-import { one, q } from "@/lib/db";
+import { one, q, run } from "@/lib/db";
 import type { Click } from "@/lib/types";
 
 beforeEach(() => {
@@ -127,6 +127,63 @@ describe("Tracking pipeline", () => {
     expect(r6.status).toBe("rejected");
     const rows = await q<Click>("SELECT * FROM clicks WHERE campaign_id = ? ORDER BY created_at", c.id);
     expect(rows.at(-1)!.reject_reason).toBe("rate_limited");
+  });
+
+  it("متصفح مؤتمت (navigator.webdriver) يُرفض automation", async () => {
+    const { c, link } = await setup();
+    const r = await recordClick({
+      code: link.code, ...visitor(), webdriver: true, referer: null, utmSource: null,
+    });
+    expect(r.status).toBe("rejected");
+    const click = (await one<Click>("SELECT * FROM clicks WHERE campaign_id = ?", c.id))!;
+    expect(click.reject_reason).toBe("automation");
+  });
+
+  it("شبكة مشبوهة (VPN/مركز بيانات) → قيد المراجعة، والنظيفة تمر", async () => {
+    const { c, link } = await setup();
+    const vpn = visitor();
+    const clean = visitor();
+    await run(
+      "INSERT INTO ip_intel (ip_hash, risky, flags, asn_org, checked_at) VALUES (?, 1, 'vpn,datacenter', 'EvilVPN Ltd', ?)",
+      vpn.ipHash, Date.now()
+    );
+    await run(
+      "INSERT INTO ip_intel (ip_hash, risky, flags, asn_org, checked_at) VALUES (?, 0, 'datacenter', 'Cloudflare Inc', ?)",
+      clean.ipHash, Date.now()
+    );
+    const r1 = await recordClick({ code: link.code, ...vpn, referer: null, utmSource: null });
+    const r2 = await recordClick({ code: link.code, ...clean, referer: null, utmSource: null });
+    expect(r1.status).toBe("pending_review");
+    expect(r2.status).toBe("qualified");
+    const flagged = (await one<Click>(
+      "SELECT * FROM clicks WHERE campaign_id = ? AND ip_hash = ?", c.id, vpn.ipHash
+    ))!;
+    expect(flagged.reject_reason).toBe("risky_ip");
+  });
+
+  it("إيقاف ip_intel_enabled يعطل فحص الشبكة المشبوهة", async () => {
+    const { link } = await setup();
+    await setSetting("ip_intel_enabled", 0);
+    const vpn = visitor();
+    await run(
+      "INSERT INTO ip_intel (ip_hash, risky, flags, checked_at) VALUES (?, 1, 'vpn', ?)",
+      vpn.ipHash, Date.now()
+    );
+    const r = await recordClick({ code: link.code, ...vpn, referer: null, utmSource: null });
+    expect(r.status).toBe("qualified");
+  });
+
+  it("جغرافيا الزيارة (مدينة/دولة) تُخزَّن مع النقرة", async () => {
+    const { c, link } = await setup();
+    const r = await recordClick({
+      code: link.code, ...visitor(), geoCountry: "SA", geoCity: "Riyadh",
+      signals: '{"el":320,"ix":4,"wd":0}', referer: null, utmSource: null,
+    });
+    expect(r.status).toBe("qualified");
+    const click = (await one<Click>("SELECT * FROM clicks WHERE campaign_id = ?", c.id))!;
+    expect(click.geo_country).toBe("SA");
+    expect(click.geo_city).toBe("Riyadh");
+    expect(JSON.parse(click.signals!).ix).toBe(4);
   });
 
   it("غياب رؤوس sec-fetch لمتصفح حديث → قيد المراجعة", async () => {

@@ -16,6 +16,11 @@ export interface IncomingClick {
   referer: string | null;
   utmSource: string | null;
   hasSecFetch?: boolean;
+  webdriver?: boolean;
+  geoCountry?: string | null;
+  geoCity?: string | null;
+  /** Forensic JSON from the JS challenge (elapsed ms, interaction count, …). */
+  signals?: string | null;
   nowMs?: number;
 }
 
@@ -56,6 +61,7 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
             deviceHash: input.deviceHash,
             userAgent: input.userAgent,
             hasSecFetch: input.hasSecFetch ?? true,
+            webdriver: input.webdriver ?? false,
             nowMs,
           });
 
@@ -63,8 +69,9 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
 
     await run(
       `INSERT INTO clicks (id, tracking_link_id, campaign_id, user_id, status, reject_reason,
-         ip_hash, session_id, device_hash, user_agent, referer, source, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ip_hash, session_id, device_hash, user_agent, referer, source,
+         geo_country, geo_city, signals, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id(),
       link.id,
       link.campaign_id,
@@ -77,6 +84,9 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
       input.userAgent,
       input.referer,
       detectSource(input.referer, input.utmSource),
+      input.geoCountry ?? null,
+      input.geoCity ?? null,
+      input.signals ?? null,
       nowMs
     );
     await applyCounterDelta(link, v.status, nowMs, +1);

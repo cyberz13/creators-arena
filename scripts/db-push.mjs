@@ -29,6 +29,9 @@ const statements = schema
 // Additive migrations FIRST: schema.sql's new indexes may reference columns
 // that CREATE TABLE IF NOT EXISTS won't add to a pre-existing table.
 await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS device_hash TEXT");
+await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS geo_country TEXT");
+await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS geo_city TEXT");
+await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS signals TEXT");
 
 for (const stmt of statements) {
   await sql.unsafe(stmt);

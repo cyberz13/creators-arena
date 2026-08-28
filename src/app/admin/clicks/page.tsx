@@ -17,6 +17,8 @@ const REASON_LABELS: Record<string, string> = {
   ip_device_cap: "تجاوز حد الأجهزة لنفس الشبكة",
   high_volume_ip: "حجم مرتفع من نفس المصدر",
   missing_sec_fetch: "متصفح بلا بصمة تصفح",
+  automation: "متصفح مؤتمت (Selenium/Puppeteer)",
+  risky_ip: "شبكة مشبوهة (VPN / مركز بيانات)",
   campaign_inactive: "حملة غير نشطة",
   admin_rejected: "رفض إداري",
 };
@@ -66,7 +68,7 @@ export default async function AdminClicksPage({
           <table className="w-full min-w-[820px] text-sm">
             <thead>
               <tr className="border-b border-white/[0.06] text-xs text-zinc-500">
-                {["الوقت", "الحملة", "Creator", "السبب", "IP Hash", "المصدر", ""].map((h) => (
+                {["الوقت", "الحملة", "Creator", "السبب", "المدينة", "IP Hash", "المصدر", ""].map((h) => (
                   <th key={h} className="px-4 py-3 text-start font-semibold">{h}</th>
                 ))}
               </tr>
@@ -85,6 +87,10 @@ export default async function AdminClicksPage({
                     <Badge variant={activeTab === "rejected" ? "danger" : "warning"}>
                       {REASON_LABELS[k.reject_reason ?? ""] ?? k.reject_reason ?? "—"}
                     </Badge>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-zinc-400">
+                    {k.geo_city ?? "—"}
+                    {k.geo_country ? <span className="text-zinc-500"> ({k.geo_country})</span> : null}
                   </td>
                   <td className="px-4 py-3">
                     <code className="text-xs text-zinc-500">{k.ip_hash.slice(0, 10)}…</code>

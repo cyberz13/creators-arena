@@ -57,6 +57,8 @@ export interface ClickContext {
   userAgent: string;
   /** Real modern browsers send sec-fetch-* headers on navigations. */
   hasSecFetch: boolean;
+  /** navigator.webdriver reported true by the JS challenge (Selenium/Puppeteer). */
+  webdriver?: boolean;
   nowMs: number;
 }
 
@@ -74,6 +76,7 @@ export interface Verdict {
  */
 export async function classifyClick(ctx: ClickContext): Promise<Verdict> {
   if (isBotUserAgent(ctx.userAgent)) return { status: "rejected", reason: "bot" };
+  if (ctx.webdriver) return { status: "rejected", reason: "automation" };
 
   const perMinuteLimit = await getSetting("rate_limit_per_minute");
   const lastMinute = await countClicks(ctx.campaignId, "ip_hash", ctx.ipHash, ctx.nowMs - 60_000);
@@ -85,6 +88,16 @@ export async function classifyClick(ctx: ClickContext): Promise<Verdict> {
     return { status: "rejected", reason: "duplicate_session" };
   if (await hasQualified(ctx.campaignId, "device_hash", ctx.deviceHash, since))
     return { status: "rejected", reason: "duplicate_device" };
+
+  // Network intelligence (cached during the interstitial): VPN / proxy / Tor
+  // / non-relay datacenter egress goes to review — the IP alone never rejects.
+  if (await getSetting("ip_intel_enabled")) {
+    const risky = await one<{ risky: number }>(
+      "SELECT risky FROM ip_intel WHERE ip_hash = ?",
+      ctx.ipHash
+    );
+    if (risky?.risky) return { status: "pending_review", reason: "risky_ip" };
+  }
 
   // CGNAT fairness: same IP is fine for distinct devices, up to a cap.
   const deviceCap = await getSetting("max_devices_per_ip_24h");

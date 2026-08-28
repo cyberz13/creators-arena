@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { recordClick } from "@/services/tracking";
 import { computeDeviceHash, hashIp, isBotUserAgent } from "@/services/fraud";
+import { ensureIpIntel, getIpIntel } from "@/services/ip-intel";
 import { issueChallengeToken, verifyChallengeToken } from "@/lib/challenge";
 
 export const dynamic = "force-dynamic";
@@ -39,6 +41,11 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ code: strin
   });
   const hasSecFetch = req.headers.has("sec-fetch-mode") || req.headers.has("sec-fetch-site");
 
+  // Coarse geo: Vercel edge headers in production, cached IP intel elsewhere.
+  const vercelCity = req.headers.get("x-vercel-ip-city");
+  let geoCountry = req.headers.get("x-vercel-ip-country");
+  let geoCity = vercelCity ? decodeURIComponent(vercelCity) : null;
+
   // Obvious bots: record (visible to the admin) and bounce straight away.
   if (isBotUserAgent(userAgent)) {
     const result = await recordClick({
@@ -50,12 +57,27 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ code: strin
       referer: req.headers.get("referer"),
       utmSource: url.searchParams.get("utm_source"),
       hasSecFetch,
+      geoCountry,
+      geoCity,
     });
     return NextResponse.redirect(result.redirectUrl ?? new URL("/?e=link", req.url), 302);
   }
 
   // Step 2: valid signed token → count the click and redirect to the store.
   if (token && verifyChallengeToken(token, code, ipHash)) {
+    if (!geoCity || !geoCountry) {
+      const intel = await getIpIntel(ipHash);
+      geoCountry = geoCountry ?? intel?.country ?? null;
+      geoCity = geoCity ?? intel?.city ?? null;
+    }
+    const webdriver = url.searchParams.get("wd") === "1";
+    const elapsed = Number(url.searchParams.get("el"));
+    const interactions = Number(url.searchParams.get("ix"));
+    const signals = JSON.stringify({
+      el: Number.isFinite(elapsed) ? elapsed : null,
+      ix: Number.isFinite(interactions) ? interactions : null,
+      wd: webdriver ? 1 : 0,
+    });
     const result = await recordClick({
       code,
       ipHash,
@@ -65,6 +87,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ code: strin
       referer: url.searchParams.get("r") || req.headers.get("referer"),
       utmSource: url.searchParams.get("utm_source"),
       hasSecFetch,
+      webdriver,
+      geoCountry,
+      geoCity,
+      signals,
     });
     if (!result.redirectUrl) {
       return NextResponse.redirect(new URL("/?e=link", req.url), 302);
@@ -82,6 +108,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ code: strin
   }
 
   // Step 1: interstitial JS challenge. Nothing is recorded here.
+  // Warm the network-intel cache while the client does its round-trip, so the
+  // counted request never pays the external-lookup latency.
+  after(() => ensureIpIntel(ip, ipHash).catch(() => {}));
   const fresh = issueChallengeToken(code, ipHash);
   const utm = url.searchParams.get("utm_source");
   const passThrough = utm ? `&utm_source=${encodeURIComponent(utm)}` : "";
@@ -112,12 +141,23 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ code: strin
 </div>
 <script>
 (function(){
+  var t0 = performance.now();
+  var ix = 0;
+  ["pointermove","touchstart","scroll","keydown"].forEach(function(ev){
+    addEventListener(ev, function(){ ix++; }, {passive:true});
+  });
   var fp = [screen.width, screen.height, screen.colorDepth,
             Intl.DateTimeFormat().resolvedOptions().timeZone || "",
             navigator.hardwareConcurrency || 0,
             window.devicePixelRatio || 1].join("x");
+  var wd = navigator.webdriver ? "&wd=1" : "";
   var r = document.referrer ? "&r=" + encodeURIComponent(document.referrer) : "";
-  location.replace("/go/${code}?t=${encodeURIComponent(fresh)}&fp=" + encodeURIComponent(fp) + r + "${passThrough}");
+  // A ~300ms window: lets the loader breathe and captures touch/pointer
+  // liveness that scripted clients never produce.
+  setTimeout(function(){
+    var extra = "&el=" + Math.round(performance.now() - t0) + "&ix=" + ix;
+    location.replace("/go/${code}?t=${encodeURIComponent(fresh)}&fp=" + encodeURIComponent(fp) + wd + extra + r + "${passThrough}");
+  }, 300);
 })();
 </script>
 </body>

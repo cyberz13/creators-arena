@@ -87,7 +87,7 @@ export default async function AdminClicksPage({
                     <code className="text-xs text-zinc-500">{k.ip_hash.slice(0, 10)}…</code>
                   </td>
                   <td className="px-4 py-3 text-xs text-zinc-400">{k.source}</td>
-                  <td className="px-4 py-3"><ReviewButtons clickId={k.id} /></td>
+                  <td className="px-4 py-3"><ReviewButtons clickId={k.id} currentStatus={activeTab} /></td>
                 </tr>
               ))}
             </tbody>

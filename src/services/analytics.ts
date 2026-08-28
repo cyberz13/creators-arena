@@ -114,7 +114,7 @@ export async function topCreators(limit = 10) {
      JOIN creator_profiles cp ON cp.user_id = p.user_id
      LEFT JOIN categories cat ON cat.id = cp.category_id
      GROUP BY p.user_id, cp.username, cp.name, cp.followers_count, cat.name_ar
-     ORDER BY qualified_total DESC LIMIT ?`,
+     ORDER BY qualified_total DESC, COALESCE(MAX(p.last_qualified_at), 9e15) ASC LIMIT ?`,
     limit
   );
 }

@@ -26,10 +26,14 @@ const statements = schema
   .map((s) => s.trim())
   .filter((s) => s.length > 0);
 
+// Additive migrations FIRST: schema.sql's new indexes may reference columns
+// that CREATE TABLE IF NOT EXISTS won't add to a pre-existing table.
+await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS device_hash TEXT");
+
 for (const stmt of statements) {
   await sql.unsafe(stmt);
 }
-console.log(`✅ Schema: ${statements.length} statement applied`);
+console.log(`✅ Schema: ${statements.length} statement applied (+ additive migrations)`);
 
 const CATEGORIES = [
   ["fashion", "موضة وأزياء", "Fashion"],

@@ -24,9 +24,15 @@ const FIELDS = [
     label: "حد المراجعة اليدوية (نقرات/24 ساعة من نفس الـIP)",
     hint: "ما يتجاوزه يذهب إلى «قيد المراجعة» بدل الاحتساب المباشر",
   },
+  {
+    key: "max_devices_per_ip_24h",
+    label: "أقصى أجهزة مختلفة لكل IP في اليوم",
+    hint: "عدالة شبكات الجوال: أجهزة متعددة خلف نفس الشبكة تُحتسب حتى هذا الحد، وما بعده يذهب للمراجعة",
+  },
 ] as const;
 
 export function SettingsForm({ settings }: { settings: Record<string, number> }) {
+  // keys are typed on the server action side; the form just renders FIELDS
   const [state, action, pending] = useActionState(updateSettingsAction, initial);
   return (
     <form action={action}>

@@ -11,9 +11,11 @@ export interface IncomingClick {
   code: string;
   ipHash: string;
   sessionId: string;
+  deviceHash: string;
   userAgent: string;
   referer: string | null;
   utmSource: string | null;
+  hasSecFetch?: boolean;
   nowMs?: number;
 }
 
@@ -42,6 +44,7 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
   const { verdict, previousLeader } = await tx(async () => {
     await txSerializeOn(`click-ip:${link.campaign_id}:${input.ipHash}`);
     await txSerializeOn(`click-sess:${link.campaign_id}:${input.sessionId}`);
+    await txSerializeOn(`click-dev:${link.campaign_id}:${input.deviceHash}`);
 
     const v =
       campaign.status !== "active"
@@ -50,7 +53,9 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
             campaignId: link.campaign_id,
             ipHash: input.ipHash,
             sessionId: input.sessionId,
+            deviceHash: input.deviceHash,
             userAgent: input.userAgent,
+            hasSecFetch: input.hasSecFetch ?? true,
             nowMs,
           });
 
@@ -58,8 +63,8 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
 
     await run(
       `INSERT INTO clicks (id, tracking_link_id, campaign_id, user_id, status, reject_reason,
-         ip_hash, session_id, user_agent, referer, source, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ip_hash, session_id, device_hash, user_agent, referer, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id(),
       link.id,
       link.campaign_id,
@@ -68,6 +73,7 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
       v.reason,
       input.ipHash,
       input.sessionId,
+      input.deviceHash,
       input.userAgent,
       input.referer,
       detectSource(input.referer, input.utmSource),

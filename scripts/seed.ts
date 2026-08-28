@@ -217,16 +217,19 @@ async function main() {
           if (roll < 0.06) {
             await recordClick({
               code: links[li].code, ipHash: `seed-bot-${visitorN}`, sessionId: `seed-bot-s-${visitorN}`,
+              deviceHash: `seed-bot-d-${visitorN}`,
               userAgent: "python-requests/2.31", referer: null, utmSource: null, nowMs: ts,
             });
           } else if (roll < 0.14) {
             await recordClick({
               code: links[li].code, ipHash: `seed-ip-${visitorN - 1}`, sessionId: `seed-s-${visitorN - 1}`,
+              deviceHash: `seed-d-${visitorN - 1}`,
               userAgent: UA_HUMAN, referer: src.referer, utmSource: src.utm, nowMs: ts + 30_000,
             });
           } else {
             await recordClick({
               code: links[li].code, ipHash: `seed-ip-${visitorN}`, sessionId: `seed-s-${visitorN}`,
+              deviceHash: `seed-d-${visitorN}`,
               userAgent: UA_HUMAN, referer: src.referer, utmSource: src.utm, nowMs: ts,
             });
           }

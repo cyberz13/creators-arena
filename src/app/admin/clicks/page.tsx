@@ -12,8 +12,11 @@ const REASON_LABELS: Record<string, string> = {
   bot: "Bot",
   rate_limited: "ضغط متكرر سريع",
   duplicate_session: "جلسة مكررة",
+  duplicate_device: "جهاز مكرر",
   duplicate_ip: "IP مكرر",
+  ip_device_cap: "تجاوز حد الأجهزة لنفس الشبكة",
   high_volume_ip: "حجم مرتفع من نفس المصدر",
+  missing_sec_fetch: "متصفح بلا بصمة تصفح",
   campaign_inactive: "حملة غير نشطة",
   admin_rejected: "رفض إداري",
 };

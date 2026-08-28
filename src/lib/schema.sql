@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS clicks (
   reject_reason    TEXT,
   ip_hash          TEXT NOT NULL,
   session_id       TEXT NOT NULL,
+  device_hash      TEXT,
   user_agent       TEXT NOT NULL DEFAULT '',
   referer          TEXT,
   source           TEXT NOT NULL DEFAULT 'direct'
@@ -114,6 +115,7 @@ CREATE INDEX IF NOT EXISTS idx_clicks_user ON clicks(user_id);
 CREATE INDEX IF NOT EXISTS idx_clicks_link ON clicks(tracking_link_id);
 CREATE INDEX IF NOT EXISTS idx_clicks_ip ON clicks(campaign_id, ip_hash, created_at);
 CREATE INDEX IF NOT EXISTS idx_clicks_session ON clicks(campaign_id, session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_clicks_device ON clicks(campaign_id, device_hash, created_at);
 CREATE INDEX IF NOT EXISTS idx_clicks_status ON clicks(status);
 CREATE INDEX IF NOT EXISTS idx_clicks_created ON clicks(created_at);
 

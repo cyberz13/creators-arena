@@ -8,6 +8,9 @@ export const DEFAULT_SETTINGS = {
   rate_limit_per_minute: 5,
   // Clicks from same ip_hash per campaign per 24h beyond this go to pending_review.
   review_threshold_24h: 30,
+  // CGNAT fairness cap: distinct qualified devices allowed per IP per campaign
+  // per 24h before further ones go to pending_review.
+  max_devices_per_ip_24h: 5,
 } as const;
 
 export type SettingKey = keyof typeof DEFAULT_SETTINGS;
@@ -31,5 +34,6 @@ export async function getAllSettings(): Promise<Record<SettingKey, number>> {
     dedup_window_hours: await getSetting("dedup_window_hours"),
     rate_limit_per_minute: await getSetting("rate_limit_per_minute"),
     review_threshold_24h: await getSetting("review_threshold_24h"),
+    max_devices_per_ip_24h: await getSetting("max_devices_per_ip_24h"),
   };
 }

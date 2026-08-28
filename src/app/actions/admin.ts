@@ -118,7 +118,12 @@ export async function reviewClickAction(clickId: string, status: "qualified" | "
 
 export async function updateSettingsAction(_prev: FormState, formData: FormData): Promise<FormState> {
   await requireAdmin();
-  const keys: SettingKey[] = ["dedup_window_hours", "rate_limit_per_minute", "review_threshold_24h"];
+  const keys: SettingKey[] = [
+    "dedup_window_hours",
+    "rate_limit_per_minute",
+    "review_threshold_24h",
+    "max_devices_per_ip_24h",
+  ];
   for (const key of keys) {
     const value = Number(formData.get(key));
     if (!Number.isFinite(value) || value < 0) return { error: "كل القيم يجب أن تكون أرقامًا موجبة" };

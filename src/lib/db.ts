@@ -56,15 +56,14 @@ function sqliteDriver(db: DatabaseSync): Driver {
 
 export function migrate(db: DatabaseSync) {
   const schema = fs.readFileSync(path.join(process.cwd(), "src", "lib", "schema.sql"), "utf8");
-  db.exec(schema);
-  // Additive migrations for pre-existing dev databases (CREATE IF NOT EXISTS
-  // won't alter an existing table).
+  // Additive migrations FIRST: schema.sql's indexes may reference columns that
+  // CREATE TABLE IF NOT EXISTS won't add to a pre-existing table.
   try {
     db.exec("ALTER TABLE clicks ADD COLUMN device_hash TEXT");
   } catch {
-    /* column already exists */
+    /* column already exists, or table not created yet (fresh DB) */
   }
-  db.exec("CREATE INDEX IF NOT EXISTS idx_clicks_device ON clicks(campaign_id, device_hash, created_at)");
+  db.exec(schema);
 }
 
 function openSqlite(): Driver {

@@ -55,10 +55,20 @@ export async function ensureIpIntel(rawIp: string, ipHash: string): Promise<void
     return;
   }
 
+  if (data.is_bogon) return;
+
+  // The API answers in either a nested (full) or flat (lite) shape.
   const asn = data.asn as { org?: string } | undefined;
   const company = data.company as { name?: string } | undefined;
   const location = data.location as { country_code?: string; city?: string } | undefined;
-  const asnOrg = asn?.org ?? company?.name ?? null;
+  const asnOrg =
+    asn?.org ??
+    (data.asn_org as string | undefined) ??
+    company?.name ??
+    (data.company_name as string | undefined) ??
+    null;
+  const country = location?.country_code ?? (data.cc as string | undefined) ?? null;
+  const city = location?.city ?? null;
 
   const flags: string[] = [];
   if (data.is_vpn) flags.push("vpn");
@@ -85,8 +95,8 @@ export async function ensureIpIntel(rawIp: string, ipHash: string): Promise<void
     risky,
     flags.length ? flags.join(",") : null,
     asnOrg,
-    location?.country_code ?? null,
-    location?.city ?? null,
+    country,
+    city,
     now()
   );
 }

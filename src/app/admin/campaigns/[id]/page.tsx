@@ -10,6 +10,9 @@ import { CampaignStatusBadge, PAYOUT_LABELS } from "@/components/campaign-status
 import { Badge } from "@/components/ui/badge";
 import { DailyVisitsChart, SourcesChart } from "@/components/charts";
 import { ManageButtons } from "./manage-buttons";
+import { ReportLink } from "./report-link";
+import { ensureReportToken } from "@/services/store-report";
+import { requestOrigin } from "@/lib/origin";
 import { formatDate, formatNumber, formatSAR } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -42,6 +45,7 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
      WHERE p.campaign_id = ? ORDER BY p.qualified_count DESC`,
     id
   );
+  const reportUrl = `${await requestOrigin()}/r/${await ensureReportToken(id)}`;
 
   return (
     <div className="space-y-6">
@@ -68,6 +72,8 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
           </Link>
         </div>
       </div>
+
+      <ReportLink url={reportUrl} />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[

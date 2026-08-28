@@ -50,9 +50,11 @@ CREATE TABLE IF NOT EXISTS campaigns (
   created_by     TEXT NOT NULL REFERENCES users(id),
   created_at     INTEGER NOT NULL,
   launched_at    INTEGER,
-  finalized_at   INTEGER
+  finalized_at   INTEGER,
+  report_token   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status);
+CREATE INDEX IF NOT EXISTS idx_campaigns_report ON campaigns(report_token);
 CREATE INDEX IF NOT EXISTS idx_campaigns_end_at ON campaigns(end_at);
 
 -- Prize snapshot: frozen at launch, one row per rank.

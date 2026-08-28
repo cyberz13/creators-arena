@@ -50,10 +50,12 @@ CREATE TABLE IF NOT EXISTS campaigns (
   created_by     TEXT NOT NULL REFERENCES users(id),
   created_at     BIGINT NOT NULL,
   launched_at    BIGINT,
-  finalized_at   BIGINT
+  finalized_at   BIGINT,
+  report_token   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status);
 CREATE INDEX IF NOT EXISTS idx_campaigns_end_at ON campaigns(end_at);
+CREATE INDEX IF NOT EXISTS idx_campaigns_report ON campaigns(report_token);
 
 CREATE TABLE IF NOT EXISTS prizes (
   id          TEXT PRIMARY KEY,

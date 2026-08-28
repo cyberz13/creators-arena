@@ -54,6 +54,7 @@ export interface Campaign {
   created_at: number;
   launched_at: number | null;
   finalized_at: number | null;
+  report_token: string | null;
 }
 
 export interface Prize {

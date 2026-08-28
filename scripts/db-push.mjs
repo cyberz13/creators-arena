@@ -32,6 +32,7 @@ await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS device_h
 await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS geo_country TEXT");
 await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS geo_city TEXT");
 await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS signals TEXT");
+await sql.unsafe("ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS report_token TEXT");
 
 for (const stmt of statements) {
   await sql.unsafe(stmt);

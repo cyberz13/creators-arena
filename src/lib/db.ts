@@ -132,17 +132,31 @@ function openPostgres(url: string): Driver {
     });
   }
 
+  // Supabase's pooler (Supavisor, transaction mode) hangs on pipelined queries:
+  // Promise.all() over one client never resolves, and extra concurrent
+  // connections can stall on connect. Serialize EVERY operation through an
+  // app-level queue so exactly one query is in flight per instance — measured
+  // sequential ops always pass, parallel bursts hang forever.
+  let chain: Promise<unknown> = Promise.resolve();
+  function enqueue<T>(job: () => Promise<T>): Promise<T> {
+    const next = chain.then(job, job);
+    chain = next.catch(() => {});
+    return next;
+  }
+
   async function withRetry<T>(fn: (s: PgSql) => Promise<T>): Promise<T> {
     const inTx = txStore.getStore();
-    if (inTx) return fn(inTx); // inside a transaction: fail fast, outer retry handles it
-    try {
-      return await capped(fn(sql));
-    } catch {
-      const stale = sql;
-      sql = mk();
-      stale.end({ timeout: 1 }).catch(() => {});
-      return capped(fn(sql));
-    }
+    if (inTx) return fn(inTx); // inside a transaction: already on the tx connection
+    return enqueue(async () => {
+      try {
+        return await capped(fn(sql));
+      } catch {
+        const stale = sql;
+        sql = mk();
+        stale.end({ timeout: 1 }).catch(() => {});
+        return capped(fn(sql));
+      }
+    });
   }
 
   return {
@@ -155,27 +169,33 @@ function openPostgres(url: string): Driver {
       await withRetry((s) => s.unsafe(toDollarParams(text), params as never[]) as unknown as Promise<unknown>);
     },
     async begin(fn) {
-      // Retry the whole transaction once on connection failure (implicit rollback).
-      const attempt = () =>
-        capped(sql.begin((txSql) => txStore.run(txSql as unknown as PgSql, fn)) as Promise<never>, TX_TIMEOUT_MS);
-      try {
-        return await attempt();
-      } catch (e) {
-        const code = (e as { code?: string }).code;
-        const retriable =
-          (e instanceof Error && e.message === "pg_op_timeout") ||
-          code === "CONNECTION_CLOSED" ||
-          code === "CONNECT_TIMEOUT";
-        if (!retriable) {
-          throw e; // domain/SQL error — retrying would just repeat it
-        }
-        const stale = sql;
-        sql = mk();
-        stale.end({ timeout: 1 }).catch(() => {});
-        return attempt();
-      }
+      // Transactions go through the same queue — a tx pins the sole connection,
+      // so a concurrent standalone query would otherwise interleave (pipeline).
+      return enqueue(() => beginInner(fn)) as Promise<never>;
     },
   };
+
+  async function beginInner<T>(fn: () => Promise<T>): Promise<T> {
+    // Retry the whole transaction once on connection failure (implicit rollback).
+    const attempt = () =>
+      capped(sql.begin((txSql) => txStore.run(txSql as unknown as PgSql, fn)) as Promise<T>, TX_TIMEOUT_MS);
+    try {
+      return await attempt();
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      const retriable =
+        (e instanceof Error && e.message === "pg_op_timeout") ||
+        code === "CONNECTION_CLOSED" ||
+        code === "CONNECT_TIMEOUT";
+      if (!retriable) {
+        throw e; // domain/SQL error — retrying would just repeat it
+      }
+      const stale = sql;
+      sql = mk();
+      stale.end({ timeout: 1 }).catch(() => {});
+      return attempt();
+    }
+  }
 }
 
 // ---------------- driver selection + public API ----------------

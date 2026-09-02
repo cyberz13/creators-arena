@@ -23,8 +23,15 @@ export interface FormState {
   error: string | null;
 }
 
+/** Arabic-Indic (٥٠٠) and Persian (۵۰۰) digits → ASCII, so Number() parses them. */
+function normalizeDigits(s: string): string {
+  return s
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+}
+
 function parseCampaignForm(formData: FormData): CampaignInput {
-  const prizes = String(formData.get("prizes") ?? "")
+  const prizes = normalizeDigits(String(formData.get("prizes") ?? ""))
     .split(/[,،\s]+/)
     .filter(Boolean)
     .map((p) => Number(p));

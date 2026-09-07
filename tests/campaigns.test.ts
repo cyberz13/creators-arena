@@ -10,12 +10,52 @@ import {
   DomainError,
   getParticipant,
   updateDraftCampaign,
+  updateCampaignDetails,
 } from "@/services/campaigns";
 import { recordClick } from "@/services/tracking";
 import { one, q } from "@/lib/db";
 
 beforeEach(() => {
   freshDb();
+});
+
+describe("تعديل بيانات حملة مُطلقة", () => {
+  it("يعدّل العنوان وبيانات المتجر لحملة نشطة دون المساس بالجوائز والتواريخ", async () => {
+    const c = await makeCampaign({ prizes: [300, 200] });
+    const updated = await updateCampaignDetails(
+      c.id,
+      {
+        title: "تحدي مسار كلاس",
+        description: "وصف جديد",
+        requirements: "",
+        store_name: "MASAR CLASS",
+        store_url: "https://masarclass.example.com/",
+        store_logo_url: null,
+        image_url: null,
+      },
+      await adminId()
+    );
+    expect(updated.title).toBe("تحدي مسار كلاس");
+    expect(updated.store_name).toBe("MASAR CLASS");
+    expect(updated.status).toBe("active");
+    expect(updated.prize_total).toBe(500);
+    expect(updated.end_at).toBe(c.end_at);
+    expect((await getPrizes(c.id)).map((p) => p.amount)).toEqual([300, 200]);
+    const log = await q("SELECT * FROM admin_actions WHERE action = 'campaign_update_details'");
+    expect(log.length).toBe(1);
+  });
+
+  it("يرفض العنوان الفارغ والرابط غير الصالح والحملة المنتهية", async () => {
+    const c = await makeCampaign();
+    const base = {
+      title: "x", description: "", requirements: "", store_name: "s",
+      store_url: "https://ok.example.com", store_logo_url: null, image_url: null,
+    };
+    await expect(updateCampaignDetails(c.id, { ...base, title: "  " }, await adminId())).rejects.toThrow(DomainError);
+    await expect(updateCampaignDetails(c.id, { ...base, store_url: "not-a-url" }, await adminId())).rejects.toThrow(DomainError);
+    await adminEndCampaign(c.id, await adminId(), "test");
+    await expect(updateCampaignDetails(c.id, base, await adminId())).rejects.toThrow(/منتهية/);
+  });
 });
 
 describe("إنشاء الحملة", () => {

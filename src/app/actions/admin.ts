@@ -10,6 +10,7 @@ import {
   createCampaign,
   launchCampaign,
   updateDraftCampaign,
+  updateCampaignDetails,
   DomainError,
   type CampaignInput,
 } from "@/services/campaigns";
@@ -78,6 +79,33 @@ export async function updateDraftCampaignAction(_prev: FormState, formData: Form
     throw e;
   }
   revalidatePath(`/admin/campaigns/${campaignId}`);
+  redirect(`/admin/campaigns/${campaignId}`);
+}
+
+export async function updateCampaignDetailsAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const admin = await requireAdmin();
+  const campaignId = String(formData.get("campaign_id"));
+  try {
+    await updateCampaignDetails(
+      campaignId,
+      {
+        title: String(formData.get("title") ?? ""),
+        description: String(formData.get("description") ?? ""),
+        requirements: String(formData.get("requirements") ?? ""),
+        store_name: String(formData.get("store_name") ?? ""),
+        store_url: String(formData.get("store_url") ?? ""),
+        store_logo_url: String(formData.get("store_logo_url") ?? "") || null,
+        image_url: String(formData.get("image_url") ?? "") || null,
+      },
+      admin.id
+    );
+  } catch (e) {
+    if (e instanceof DomainError) return { error: e.message };
+    throw e;
+  }
+  revalidatePath(`/admin/campaigns/${campaignId}`);
+  revalidatePath("/admin/campaigns");
+  revalidatePath(`/campaigns/${campaignId}`);
   redirect(`/admin/campaigns/${campaignId}`);
 }
 

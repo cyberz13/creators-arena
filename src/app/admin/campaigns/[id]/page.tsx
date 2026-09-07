@@ -67,9 +67,16 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
         </div>
         <div className="flex flex-col items-end gap-2">
           <ManageButtons campaignId={id} status={campaign.status} />
-          <Link href={`/campaigns/${id}`} className="text-sm font-semibold text-brand-400 hover:underline">
-            عرض الصفحة العامة ←
-          </Link>
+          <div className="flex gap-4">
+            {campaign.status !== "ended" && campaign.status !== "cancelled" && (
+              <Link href={`/admin/campaigns/${id}/edit`} className="text-sm font-semibold text-brand-400 hover:underline">
+                ✏️ تعديل البيانات
+              </Link>
+            )}
+            <Link href={`/campaigns/${id}`} className="text-sm font-semibold text-brand-400 hover:underline">
+              عرض الصفحة العامة ←
+            </Link>
+          </div>
         </div>
       </div>
 

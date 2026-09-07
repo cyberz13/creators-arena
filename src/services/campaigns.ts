@@ -104,6 +104,44 @@ export async function launchCampaign(campaignId: string, adminId: string): Promi
 }
 
 /** Draft campaigns are fully editable. After launch the prize snapshot and dates are frozen. */
+/** Fields that stay editable after launch — nothing that affects fairness (dates, prizes). */
+export type CampaignDetails = Pick<
+  CampaignInput,
+  "title" | "description" | "requirements" | "store_name" | "store_url" | "store_logo_url" | "image_url"
+>;
+
+export async function updateCampaignDetails(
+  campaignId: string,
+  details: CampaignDetails,
+  adminId: string
+): Promise<Campaign> {
+  const c = await getCampaign(campaignId);
+  if (!c) throw new DomainError("الحملة غير موجودة");
+  if (c.status === "ended" || c.status === "cancelled")
+    throw new DomainError("لا يمكن تعديل حملة منتهية أو ملغاة");
+  // Reuse the shared validation for the text/url fields; dates & prizes are the stored ones.
+  validateInput({
+    ...details,
+    start_at: c.start_at,
+    end_at: c.end_at,
+    prizes: [c.prize_total || 1],
+  });
+  await run(
+    `UPDATE campaigns SET title=?, description=?, requirements=?, store_name=?, store_url=?,
+       store_logo_url=?, image_url=? WHERE id=?`,
+    details.title.trim(),
+    details.description.trim(),
+    details.requirements.trim(),
+    details.store_name.trim(),
+    details.store_url.trim(),
+    details.store_logo_url || null,
+    details.image_url || null,
+    campaignId
+  );
+  await logAdminAction(adminId, "campaign_update_details", "campaign", campaignId);
+  return (await getCampaign(campaignId))!;
+}
+
 export async function updateDraftCampaign(
   campaignId: string,
   input: CampaignInput,

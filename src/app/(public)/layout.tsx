@@ -81,7 +81,7 @@ export default async function PublicLayout({ children }: { children: React.React
           <div className="flex flex-col gap-2.5 text-[13px]">
             <span className="font-semibold text-zinc-300">قانوني</span>
             <Link href="/terms" className="text-zinc-500 hover:text-brand-500">الشروط والأحكام</Link>
-            <span className="text-zinc-500">سياسة الخصوصية</span>
+            <Link href="/privacy" className="text-zinc-500 hover:text-brand-500">سياسة الخصوصية</Link>
           </div>
         </div>
         <div className="mx-auto max-w-[1160px] px-6 pb-8 pt-1 text-xs text-zinc-600">

@@ -8,6 +8,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { Card } from "@/components/ui/card";
 import { CampaignCard } from "@/components/campaign-card";
 import { CopyLink } from "@/components/copy-link";
+import { LicenseNotice } from "@/components/license-notice";
 import { formatNumber, formatRemaining, formatSAR } from "@/lib/utils";
 import { requestOrigin } from "@/lib/origin";
 
@@ -78,6 +79,7 @@ export default async function CreatorHome() {
                   </div>
                   <div className="mt-3 border-t border-white/[0.06] pt-3">
                     <CopyLink url={`${origin}/go/${c.tracking_code}`} title={c.title} />
+                    <div className="mt-2"><LicenseNotice compact /></div>
                   </div>
                   <p className="tabular mt-2 text-sm text-zinc-400">
                     زياراتك المؤهلة: <span className="font-bold text-white">{formatNumber(c.my_qualified)}</span>

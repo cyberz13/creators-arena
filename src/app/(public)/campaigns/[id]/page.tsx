@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { CampaignStatusBadge } from "@/components/campaign-status";
 import { Countdown } from "@/components/countdown";
 import { CopyLink } from "@/components/copy-link";
+import { LicenseNotice } from "@/components/license-notice";
 import { JoinButton } from "@/components/join-button";
 import { Leaderboard } from "@/components/leaderboard";
 import { formatNumber, formatSAR } from "@/lib/utils";
@@ -149,6 +150,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
             <div>
               <p className="mb-3 font-bold text-white">🔗 رابطك الخاص — انشره الآن</p>
               <CopyLink url={`${origin}/go/${myLink.code}`} title={campaign.title} />
+              <div className="mt-3"><LicenseNotice /></div>
               <p className="mt-3 text-xs text-zinc-500">
                 كل زيارة حقيقية عبر رابطك تُحتسب لك في الترتيب. الزيارات المكررة والوهمية لا تُحتسب.
               </p>

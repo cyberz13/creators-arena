@@ -11,7 +11,9 @@
     "seed": "tsx scripts/seed.ts",
     "db:push": "node scripts/db-push.mjs",
     "check:http": "node scripts/http-security-check.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:pg": "node scripts/pg-concurrency-test.mjs",
+    "db:check": "node scripts/db-security-check.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

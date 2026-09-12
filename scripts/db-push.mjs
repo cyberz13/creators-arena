@@ -2,17 +2,24 @@
  * Applies the Postgres schema + bootstrap data (categories, admin account)
  * to the Supabase database in DATABASE_URL. Idempotent — safe to re-run.
  *
- *   DATABASE_URL="postgresql://..." npm run db:push
+ *   MIGRATION_DATABASE_URL="postgresql://..." CONFIRM_PROD_WRITE=I_UNDERSTAND npm run db:push
  */
 import fs from "node:fs";
 import postgres from "postgres";
 import bcrypt from "bcryptjs";
 
-const url = process.env.DATABASE_URL;
+// Migrations use a SEPARATE, higher-privilege connection (table owner). The
+// application's runtime DATABASE_URL (limited role app_runtime) is not accepted.
+const url = process.env.MIGRATION_DATABASE_URL;
 if (!url || !/^postgres/.test(url)) {
-  console.error("❌ ضع DATABASE_URL (رابط Supabase) في البيئة أو .env.local ثم أعد المحاولة");
+  console.error("❌ ضع MIGRATION_DATABASE_URL (اتصال المالك — للترحيلات فقط، لا يوضع في Vercel) ثم أعد المحاولة");
   process.exit(1);
 }
+if (process.env.CONFIRM_PROD_WRITE !== "I_UNDERSTAND") {
+  console.error("❌ هذا السكربت يعدّل مخطط قاعدة حية. ضع CONFIRM_PROD_WRITE=I_UNDERSTAND للمتابعة");
+  process.exit(1);
+}
+console.error("⚠️  migrating schema on: " + new URL(url).host);
 
 const sql = postgres(url, { ssl: "require", max: 1, prepare: false });
 
@@ -34,6 +41,11 @@ await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS geo_city
 await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS signals TEXT");
 await sql.unsafe("ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS report_token TEXT");
 await sql.unsafe("ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS results_status TEXT NOT NULL DEFAULT 'open'");
+await sql.unsafe("ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS report_token_expires_at BIGINT");
+await sql.unsafe("ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS report_views INTEGER NOT NULL DEFAULT 0");
+await sql.unsafe("ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS report_last_viewed_at BIGINT");
+// Links issued before expiry existed get the standard 90-day validity from now.
+await sql.unsafe("UPDATE campaigns SET report_token_expires_at = " + (Date.now() + 90 * 86400000) + " WHERE report_token IS NOT NULL AND report_token_expires_at IS NULL");
 await sql.unsafe("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS participation_status TEXT NOT NULL DEFAULT 'active'");
 await sql.unsafe("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS approved INTEGER NOT NULL DEFAULT 1");
 await sql.unsafe("ALTER TABLE IF EXISTS campaign_participants ADD COLUMN IF NOT EXISTS excluded INTEGER NOT NULL DEFAULT 0");

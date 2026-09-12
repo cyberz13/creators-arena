@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS campaigns (
   launched_at    INTEGER,
   finalized_at   INTEGER,
   report_token   TEXT,
+  report_token_expires_at INTEGER,
+  report_views   INTEGER NOT NULL DEFAULT 0,
+  report_last_viewed_at INTEGER,
   -- results lifecycle: open (running) → provisional (ended, under review) → final (confirmed)
   results_status TEXT NOT NULL DEFAULT 'open' CHECK (results_status IN ('open','provisional','final'))
 );

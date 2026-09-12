@@ -79,6 +79,9 @@ export function migrate(db: DatabaseSync) {
     ["clicks", "signals TEXT"],
     ["campaigns", "report_token TEXT"],
     ["campaigns", "results_status TEXT NOT NULL DEFAULT 'open'"],
+    ["campaigns", "report_token_expires_at INTEGER"],
+    ["campaigns", "report_views INTEGER NOT NULL DEFAULT 0"],
+    ["campaigns", "report_last_viewed_at INTEGER"],
     ["users", "participation_status TEXT NOT NULL DEFAULT 'active'"],
     ["users", "approved INTEGER NOT NULL DEFAULT 1"],
     ["campaign_participants", "excluded INTEGER NOT NULL DEFAULT 0"],
@@ -289,6 +292,17 @@ export async function txSerializeOn(key: string, mode: "exclusive" | "shared" = 
       key
     );
   }
+}
+
+export function isPostgres(): boolean {
+  return !!process.env.DATABASE_URL && /^postgres/.test(process.env.DATABASE_URL);
+}
+
+/** SQL expression: hour of day (0-23) in Riyadh time for an epoch-ms column — per dialect. */
+export function hourOfDayRiyadhExpr(column: string): string {
+  return isPostgres()
+    ? `(EXTRACT(HOUR FROM to_timestamp(${column} / 1000.0 + 10800)))::int`
+    : `CAST(strftime('%H', (${column} / 1000) + 10800, 'unixepoch') AS INTEGER)`;
 }
 
 export const id = () => crypto.randomUUID();

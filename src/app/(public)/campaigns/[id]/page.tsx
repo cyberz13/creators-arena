@@ -152,7 +152,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
               <CopyLink url={`${origin}/go/${myLink.code}`} title={campaign.title} />
               <div className="mt-3"><LicenseNotice /></div>
               <p className="mt-3 text-xs text-zinc-500">
-                كل زيارة حقيقية عبر رابطك تُحتسب لك في الترتيب. الزيارات المكررة والوهمية لا تُحتسب.
+                تُحتسب لك كل زيارة عبر رابطك تجتاز فلاتر المنصة. الزيارات المكررة والآلية والمشبوهة لا تُحتسب أو تُحال للمراجعة.
               </p>
             </div>
           ) : (

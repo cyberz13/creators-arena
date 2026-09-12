@@ -20,7 +20,9 @@ import { updatePayoutStatus } from "@/services/payouts";
 import { reviewClick } from "@/services/tracking";
 import { confirmResults, correctResults, excludeParticipant } from "@/services/results";
 import { setSetting, type SettingKey } from "@/services/settings";
+import { revokeReportToken, rotateReportToken } from "@/services/store-report";
 import type { PayoutStatus, User } from "@/lib/types";
+import { parseRiyadhLocalInput } from "@/lib/time";
 
 export interface FormState {
   error: string | null;
@@ -46,8 +48,9 @@ function parseCampaignForm(formData: FormData): CampaignInput {
     store_url: String(formData.get("store_url") ?? ""),
     store_logo_url: String(formData.get("store_logo_url") ?? "") || null,
     image_url: String(formData.get("image_url") ?? "") || null,
-    start_at: new Date(String(formData.get("start_at") ?? "")).getTime(),
-    end_at: new Date(String(formData.get("end_at") ?? "")).getTime(),
+    // datetime-local values are Riyadh wall-clock time with an explicit +03:00 offset
+    start_at: parseRiyadhLocalInput(String(formData.get("start_at") ?? "")),
+    end_at: parseRiyadhLocalInput(String(formData.get("end_at") ?? "")),
     prizes,
   };
 }
@@ -138,8 +141,8 @@ export async function cancelCampaignAction(campaignId: string, reason: string) {
 }
 
 export async function extendCampaignAction(campaignId: string, newEndAtIso: string, reason: string) {
-  const ts = new Date(newEndAtIso).getTime();
-  if (!Number.isFinite(ts)) return { error: "تاريخ غير صالح" };
+  const ts = parseRiyadhLocalInput(newEndAtIso.trim());
+  if (!Number.isFinite(ts)) return { error: "تاريخ غير صالح (الصيغة: 2026-09-01T20:00 بتوقيت الرياض)" };
   return guarded((a) => adminExtendCampaign(campaignId, ts, a, reason), campaignPaths(campaignId));
 }
 
@@ -156,6 +159,17 @@ export async function excludeParticipantAction(campaignId: string, userId: strin
     ...campaignPaths(campaignId),
     `/admin/creators/${userId}`,
   ]);
+}
+
+export async function rotateReportTokenAction(campaignId: string) {
+  return guarded((a) => rotateReportToken(campaignId, a), [`/admin/campaigns/${campaignId}`]);
+}
+
+export async function revokeReportTokenAction(campaignId: string, reason: string) {
+  return guarded(async (a) => {
+    await revokeReportToken(campaignId, a);
+    void reason;
+  }, [`/admin/campaigns/${campaignId}`]);
 }
 
 export async function setUserStatusAction(userId: string, status: "active" | "disabled", reason: string) {

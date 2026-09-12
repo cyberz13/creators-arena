@@ -134,12 +134,24 @@ try {
   check("first token use → 302 to store", first.status === 302 && (first.headers.get("location") ?? "").startsWith("https://store.example.test"), `status=${first.status}`);
   check("replay → 302 but NOT counted", second.status === 302 && after.qualified === 1 && after.clicks === 1, `qualified=${after.qualified} clicks=${after.clicks}`);
 
-  // 5. Early request limiter
+  // 5. Site-wide security headers (proxy CSP with nonce + next.config headers)
+  const login = await get("/login");
+  const siteCsp = login.headers.get("content-security-policy") ?? "";
+  check("site CSP with nonce + strict-dynamic, no unsafe-eval", /script-src 'self' 'nonce-[A-Za-z0-9+/=]+' 'strict-dynamic'/.test(siteCsp) && !siteCsp.includes("unsafe-eval") && siteCsp.includes("frame-ancestors 'none'"), siteCsp.slice(0, 120));
+  check("HSTS + nosniff + frame + referrer + permissions", login.headers.get("strict-transport-security")?.includes("max-age=63072000") === true && login.headers.get("x-content-type-options") === "nosniff" && login.headers.get("x-frame-options") === "DENY" && !!login.headers.get("referrer-policy") && !!login.headers.get("permissions-policy"));
+  check("no x-powered-by", login.headers.get("x-powered-by") === null);
+  const report = await get("/r/" + "0".repeat(32));
+  check("report route: Referrer-Policy no-referrer + 404 for unknown token", report.headers.get("referrer-policy") === "no-referrer" && report.status === 404, `status=${report.status}`);
+  const admin = await get("/admin");
+  check("admin without session → redirect to login, private no-store", (admin.status === 307 || admin.status === 302) && (admin.headers.get("location") ?? "").includes("/login") && (admin.headers.get("cache-control") ?? "").includes("no-store"), `status=${admin.status}`);
+
+  // 6. Early request limiter
   let last = 0;
   for (let i = 0; i < 125; i++) last = (await get(`/go/${code}`)).status;
   check("flood → 429 before DB work", last === 429, `status=${last}`);
 } catch (e) {
   check("run", false, String(e?.message ?? e));
+  if (process.env.HTTP_CHECK_DEBUG) console.error(serverLog.slice(-4000));
 } finally {
   server.kill();
   await new Promise((r) => setTimeout(r, 500));

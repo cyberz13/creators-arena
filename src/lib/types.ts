@@ -62,6 +62,9 @@ export interface Campaign {
   launched_at: number | null;
   finalized_at: number | null;
   report_token: string | null;
+  report_token_expires_at: number | null;
+  report_views: number;
+  report_last_viewed_at: number | null;
   results_status: ResultsStatus;
 }
 

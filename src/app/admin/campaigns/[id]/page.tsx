@@ -14,7 +14,7 @@ import { ExcludeButton, ResultsButtons } from "./results-buttons";
 import { ReportLink } from "./report-link";
 import { ensureReportToken } from "@/services/store-report";
 import { requestOrigin } from "@/lib/origin";
-import { formatDate, formatNumber, formatSAR } from "@/lib/utils";
+import { daysUntil, formatDate, formatNumber, formatSAR } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +51,8 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
   const pendingClicks = Number(
     (await one<{ n: number }>("SELECT COUNT(*) AS n FROM clicks WHERE campaign_id = ? AND status = 'pending_review'", id))?.n ?? 0
   );
-  const reportUrl = `${await requestOrigin()}/r/${await ensureReportToken(id)}`;
+  const report = await ensureReportToken(id);
+  const reportUrl = `${await requestOrigin()}/r/${report.token}`;
 
   return (
     <div className="space-y-6">
@@ -94,7 +95,7 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
         </div>
       </div>
 
-      <ReportLink url={reportUrl} />
+      <ReportLink campaignId={id} url={reportUrl} expiresInDays={daysUntil(report.expiresAt)} views={report.views} />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[

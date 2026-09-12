@@ -25,7 +25,7 @@ export function ManageButtons({ campaignId, status }: { campaignId: string; stat
         <>
           <ActionButton
             label="⏳ تمديد الحملة"
-            askValue={{ prompt: "تاريخ النهاية الجديد:", type: "datetime-local" }}
+            askValue={{ prompt: "تاريخ النهاية الجديد (بتوقيت الرياض):", type: "datetime-local" }}
             askReason
             onRun={(reason, value) => extendCampaignAction(campaignId, value, reason)}
           />

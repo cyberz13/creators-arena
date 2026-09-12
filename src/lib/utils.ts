@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { PRODUCT_TZ, riyadhDay, toRiyadhLocalInput } from "./time";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -19,11 +20,12 @@ export function formatDate(ms: number): string {
   return new Intl.DateTimeFormat("ar-SA-u-nu-latn-ca-gregory", {
     dateStyle: "medium",
     timeStyle: "short",
+    timeZone: PRODUCT_TZ,
   }).format(new Date(ms));
 }
 
 export function formatDay(ms: number): string {
-  return new Intl.DateTimeFormat("ar-SA-u-nu-latn-ca-gregory", { dateStyle: "medium" }).format(
+  return new Intl.DateTimeFormat("ar-SA-u-nu-latn-ca-gregory", { dateStyle: "medium", timeZone: PRODUCT_TZ }).format(
     new Date(ms)
   );
 }
@@ -44,21 +46,22 @@ export function formatRemaining(untilMs: number, fromMs = Date.now()): string {
   return parts.join(" و");
 }
 
+/** Whole days from now until `ms` (never negative) — computed outside React render. */
+export function daysUntil(ms: number, nowMs = Date.now()): number {
+  return Math.max(0, Math.ceil((ms - nowMs) / 86_400_000));
+}
+
 /** True when the campaign ends within 48h — computed outside React render. */
 export function isEndingSoon(endAt: number, nowMs = Date.now()): boolean {
   return endAt - nowMs < 48 * 3_600_000;
 }
 
-/** Default campaign window for the creation form (now → +7 days), as datetime-local strings. */
+/** Default campaign window for the creation form (now → +7 days), as Riyadh datetime-local strings. */
 export function defaultCampaignWindow(nowMs = Date.now()): { start: string; end: string } {
-  const toLocalInput = (ms: number) => new Date(ms - new Date(ms).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-  return { start: toLocalInput(nowMs), end: toLocalInput(nowMs + 7 * 86_400_000) };
+  return { start: toRiyadhLocalInput(nowMs), end: toRiyadhLocalInput(nowMs + 7 * 86_400_000) };
 }
 
+/** Day bucket for daily stats — Riyadh calendar day. */
 export function dayKey(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
-}
-
-export function appUrl(): string {
-  return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  return riyadhDay(ms);
 }

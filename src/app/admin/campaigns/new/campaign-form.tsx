@@ -53,11 +53,11 @@ export function CampaignForm({ defaultStart, defaultEnd }: { defaultStart: strin
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <Label htmlFor="start_at">تاريخ البداية</Label>
+            <Label htmlFor="start_at">تاريخ البداية (بتوقيت الرياض)</Label>
             <Input id="start_at" name="start_at" type="datetime-local" required defaultValue={defaultStart} dir="ltr" />
           </div>
           <div>
-            <Label htmlFor="end_at">تاريخ النهاية</Label>
+            <Label htmlFor="end_at">تاريخ النهاية (بتوقيت الرياض)</Label>
             <Input id="end_at" name="end_at" type="datetime-local" required defaultValue={defaultEnd} dir="ltr" />
           </div>
         </div>

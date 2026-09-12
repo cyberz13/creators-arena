@@ -228,6 +228,27 @@ export async function sweepLifecycles(force = false) {
   );
   for (const c of due) await ensureLifecycle(c);
   await notifyEndingSoon();
+  // Housekeeping piggybacks on the sweep (no cron on Vercel by default):
+  // retention for IP intelligence (7 days, as stated in the privacy policy),
+  // stale challenges/sessions/rate-limit rows, and re-evaluation of clicks
+  // that were waiting for a network verdict.
+  try {
+    const [{ purgeStaleChallenges }, { purgeSessions }, { purgeRateLimits }, { purgeStaleIpIntel }, { reevaluateIpUnverified }] =
+      await Promise.all([
+        import("./challenges"),
+        import("./sessions"),
+        import("./rate-limit"),
+        import("./ip-intel"),
+        import("./tracking"),
+      ]);
+    await purgeStaleChallenges();
+    await purgeSessions();
+    await purgeRateLimits();
+    await purgeStaleIpIntel();
+    await reevaluateIpUnverified();
+  } catch (e) {
+    console.error("sweep housekeeping failed", e);
+  }
 }
 
 /** One-time "ending soon" notification to participants of campaigns within 24h of the end. */

@@ -84,6 +84,9 @@ export function migrate(db: DatabaseSync) {
     ["campaign_participants", "excluded INTEGER NOT NULL DEFAULT 0"],
     ["campaign_participants", "excluded_reason TEXT"],
     ["notifications", "dedupe_key TEXT"],
+    ["users", "email_verified INTEGER NOT NULL DEFAULT 1"],
+    ["users", "mfa_enabled INTEGER NOT NULL DEFAULT 0"],
+    ["users", "mfa_secret_enc TEXT"],
   ];
   for (const [table, col] of additive) {
     try {

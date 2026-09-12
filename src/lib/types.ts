@@ -15,6 +15,9 @@ export interface User {
   status: UserStatus;
   participation_status: ParticipationStatus;
   approved: number;
+  email_verified: number;
+  mfa_enabled: number;
+  mfa_secret_enc: string | null;
   created_at: number;
 }
 

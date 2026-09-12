@@ -34,6 +34,11 @@ export async function hasFreshIpIntel(ipHash: string, nowMs = now()): Promise<bo
   return !!row && nowMs - Number(row.checked_at) < CACHE_TTL_MS;
 }
 
+/** Retention: verdicts older than the cache TTL (7 days) are deleted, not merely ignored. */
+export async function purgeStaleIpIntel(nowMs = now()): Promise<void> {
+  await run("DELETE FROM ip_intel WHERE checked_at < ?", nowMs - CACHE_TTL_MS);
+}
+
 export async function getIpIntel(ipHash: string): Promise<IpIntelRow | null> {
   return (await one<IpIntelRow>("SELECT * FROM ip_intel WHERE ip_hash = ?", ipHash)) ?? null;
 }

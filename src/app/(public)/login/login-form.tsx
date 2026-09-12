@@ -20,6 +20,9 @@ export function LoginForm() {
         <Input id="password" name="password" type="password" dir="ltr" required autoComplete="current-password" />
       </div>
       <FieldError message={state.error} />
+      <p className="text-end text-xs">
+        <a href="/forgot-password" className="text-zinc-400 hover:text-brand-300">نسيت كلمة المرور؟</a>
+      </p>
       <Button type="submit" size="lg" className="w-full" disabled={pending}>
         {pending ? "جارٍ الدخول..." : "دخول"}
       </Button>

@@ -11,6 +11,11 @@ CREATE TABLE IF NOT EXISTS users (
   participation_status TEXT NOT NULL DEFAULT 'active' CHECK (participation_status IN ('active','suspended')),
   -- registration approval (REGISTRATION_MODE=pending_approval): 0 = cannot join campaigns yet
   approved      INTEGER NOT NULL DEFAULT 1,
+  -- e-mail ownership (existing accounts are grandfathered as verified)
+  email_verified INTEGER NOT NULL DEFAULT 1,
+  -- admin MFA (TOTP); secret is AES-256-GCM encrypted with MFA_ENCRYPTION_KEY
+  mfa_enabled    INTEGER NOT NULL DEFAULT 0,
+  mfa_secret_enc TEXT,
   created_at    BIGINT NOT NULL
 );
 
@@ -212,3 +217,61 @@ CREATE TABLE IF NOT EXISTS challenges (
   consumed_at BIGINT
 );
 CREATE INDEX IF NOT EXISTS idx_challenges_issued ON challenges(issued_at);
+
+-- Server-side sessions: the cookie holds a random token, only its SHA-256 is stored.
+CREATE TABLE IF NOT EXISTS sessions (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash   TEXT NOT NULL UNIQUE,
+  stage        TEXT NOT NULL DEFAULT 'full' CHECK (stage IN ('full','mfa_pending')),
+  created_at   BIGINT NOT NULL,
+  expires_at   BIGINT NOT NULL,
+  last_seen_at BIGINT NOT NULL,
+  revoked_at   BIGINT,
+  ip_hash      TEXT,
+  user_agent   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+-- Fixed-window rate limiter shared by all instances (atomic upsert).
+CREATE TABLE IF NOT EXISTS rate_limits (
+  key          TEXT PRIMARY KEY,
+  count        INTEGER NOT NULL,
+  window_start BIGINT NOT NULL
+);
+
+-- One-time tokens for e-mail verification and password reset (hash only).
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK (kind IN ('verify_email','reset_password')),
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at BIGINT NOT NULL,
+  used_at    BIGINT,
+  created_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id, kind);
+
+-- Outbound mail log / dev outbox (provider "log" keeps the message here only).
+CREATE TABLE IF NOT EXISTS mail_outbox (
+  id         TEXT PRIMARY KEY,
+  to_email   TEXT NOT NULL,
+  subject    TEXT NOT NULL,
+  body       TEXT NOT NULL,
+  provider   TEXT NOT NULL,
+  status     TEXT NOT NULL CHECK (status IN ('queued','sent','failed')),
+  error      TEXT,
+  created_at BIGINT NOT NULL,
+  sent_at    BIGINT
+);
+
+-- MFA recovery codes (hash only, single use).
+CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash  TEXT NOT NULL UNIQUE,
+  used_at    BIGINT,
+  created_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_codes_user ON mfa_recovery_codes(user_id);

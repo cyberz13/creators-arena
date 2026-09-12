@@ -8,6 +8,7 @@ import { recordClick } from "@/services/tracking";
 import { computeDeviceHash, hashIp, isBotUserAgent } from "@/services/fraud";
 import { ensureIpIntel, hasFreshIpIntel } from "@/services/ip-intel";
 import { consumeChallenge, issueChallenge } from "@/services/challenges";
+import { reevaluateIpUnverified } from "@/services/tracking";
 import { getSetting } from "@/services/settings";
 
 export const dynamic = "force-dynamic";
@@ -183,7 +184,14 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ code: strin
 
   // Step 1: challenge page. Nothing is counted here.
   if (await getSetting("ip_intel_enabled")) {
-    after(() => ensureIpIntel(ip, ipHash).catch(() => {}));
+    after(async () => {
+      try {
+        await ensureIpIntel(ip, ipHash);
+        await reevaluateIpUnverified(ipHash);
+      } catch {
+        /* best effort */
+      }
+    });
   }
   const challenge = await issueChallenge(code, ipHash, sessionId);
   const config = jsonForHtml({ code, t: challenge, utm: utmSource ?? "" });

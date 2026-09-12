@@ -27,7 +27,7 @@ export async function registerCreator(input: RegisterInput): Promise<string> {
   if (!USERNAME_RE.test(username))
     throw new DomainError("اسم المستخدم يجب أن يكون 3-30 حرفًا إنجليزيًا أو أرقامًا أو _ .");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new DomainError("البريد الإلكتروني غير صالح");
-  if (input.password.length < 8) throw new DomainError("كلمة المرور 8 أحرف على الأقل");
+  if (input.password.length < 10) throw new DomainError("كلمة المرور 10 أحرف على الأقل");
   if (await one("SELECT 1 FROM users WHERE email = ?", email)) throw new DomainError("البريد مسجل مسبقًا");
   if (await one("SELECT 1 FROM creator_profiles WHERE username = ?", username))
     throw new DomainError("اسم المستخدم محجوز");

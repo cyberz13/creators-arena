@@ -221,9 +221,12 @@ describe("TOTP / MFA", () => {
     const { secret, uri } = await beginMfaEnrollment(row);
     expect(uri).toContain("otpauth://totp/");
     expect((await one<User>("SELECT * FROM users WHERE id = ?", admin))!.mfa_secret_enc).not.toContain(secret);
-    await expect(completeMfaEnrollment(admin, "000000")).rejects.toThrow(/غير صحيح/);
-    const codes = await completeMfaEnrollment(admin, totpCode(secret));
+    const session = await issueSession(row, "full");
+    await expect(completeMfaEnrollment(admin, "000000", session.sessionId)).rejects.toThrow(/غير صحيح/);
+    const { recoveryCodes: codes, session: rotated } = await completeMfaEnrollment(admin, totpCode(secret), session.sessionId);
     expect(codes.length).toBe(8);
+    expect(await resolveSession(session.token)).toBeNull(); // pre-MFA session revoked
+    expect((await resolveSession(rotated.token))!.session.mfa_verified_at).not.toBeNull();
     expect(Number((await one<User>("SELECT * FROM users WHERE id = ?", admin))!.mfa_enabled)).toBe(1);
     for (const c of codes) expect(JSON.stringify(await q("SELECT code_hash FROM mfa_recovery_codes"))).not.toContain(c.replace("-", ""));
     expect(await verifyMfa(admin, totpCode(secret))).toBe(true);

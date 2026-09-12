@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { getSessionUser, requireAdmin } from "@/lib/auth";
+import { getSessionUser, replaceSessionCookie, requireAdmin } from "@/lib/auth";
 import { one } from "@/lib/db";
 import { requestOrigin } from "@/lib/origin";
 import { changePassword, issueEmailVerification } from "@/services/auth";
@@ -67,8 +67,9 @@ export async function completeMfaAction(_prev: FormState, formData: FormData): P
   const row = await one<User>("SELECT * FROM users WHERE id = ?", admin.id);
   if (!row) return { error: "الحساب غير موجود" };
   try {
-    const codes = await completeMfaEnrollment(admin.id, parsed.data.code);
-    return { error: null, recoveryCodes: codes };
+    const result = await completeMfaEnrollment(admin.id, parsed.data.code, admin.sessionId);
+    await replaceSessionCookie(result.session.token, { id: admin.id, role: admin.role });
+    return { error: null, recoveryCodes: result.recoveryCodes };
   } catch (e) {
     if (e instanceof DomainError) return { error: e.message };
     throw e;

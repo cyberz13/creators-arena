@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { execute, id, now, one, run } from "@/lib/db";
 import { hashPassword, verifyPassword } from "@/lib/password";
 import { registrationMode } from "@/lib/env";
-import { mailEnabled, sendMail } from "@/lib/mailer";
+import { mailEnabled, mailProvider, sendMail } from "@/lib/mailer";
 import type { User } from "@/lib/types";
 import { DomainError } from "./errors";
 import { consumeRateLimit } from "./rate-limit";
@@ -92,6 +92,15 @@ export async function registerAccount(input: RegisterInput, ipHash: string, orig
 
 // ---------------- one-time tokens ----------------
 
+/** True when some transport will carry the message (resend, or the dev outbox). Production without a provider → false. */
+function mailDeliverable(): boolean {
+  try {
+    return mailProvider() !== "none";
+  } catch {
+    return false;
+  }
+}
+
 function tokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -128,6 +137,7 @@ async function consumeToken(kind: "verify_email" | "reset_password", token: stri
 export async function issueEmailVerification(userId: string, origin: string): Promise<boolean> {
   const user = await one<User>("SELECT * FROM users WHERE id = ?", userId);
   if (!user || Number(user.email_verified) === 1) return false;
+  if (!mailDeliverable()) return false; // a token nobody can receive is only a liability
   const token = await issueToken("verify_email", userId, VERIFY_TTL_MS);
   const res = await sendMail({
     to: user.email,
@@ -153,6 +163,10 @@ export async function requestPasswordReset(emailRaw: string, ipHash: string, ori
   if (!emailVerdict.allowed) return;
   const user = await one<User>("SELECT * FROM users WHERE email = ? AND status = 'active' AND id <> 'system'", email);
   if (!user) return;
+  if (!mailDeliverable()) {
+    console.error("[auth] password reset requested but mail is not configured — no token issued");
+    return;
+  }
   const token = await issueToken("reset_password", user.id, RESET_TTL_MS);
   await sendMail({
     to: user.email,

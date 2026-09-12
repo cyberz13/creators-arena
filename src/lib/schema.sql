@@ -232,6 +232,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at   INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
   revoked_at   INTEGER,
+  -- set when this very session passed TOTP (or completed enrolment); admin access requires it
+  mfa_verified_at INTEGER,
   ip_hash      TEXT,
   user_agent   TEXT
 );
@@ -279,3 +281,13 @@ CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mfa_codes_user ON mfa_recovery_codes(user_id);
+
+-- Idempotency ledger for transactions whose commit result may be lost in
+-- transit (timeouts / dropped connections): a retry with the same key replays
+-- the stored result instead of re-executing the writes.
+CREATE TABLE IF NOT EXISTS tx_ledger (
+  key        TEXT PRIMARY KEY,
+  result     TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tx_ledger_created ON tx_ledger(created_at);

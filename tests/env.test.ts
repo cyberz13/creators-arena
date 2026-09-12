@@ -69,6 +69,10 @@ describe("إعدادات البيئة", () => {
     vi.stubEnv("CHALLENGE_SECRET", "c".repeat(40));
     vi.stubEnv("IP_HASH_SALT", "i".repeat(20));
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://example.com");
+    vi.stubEnv("MFA_ENCRYPTION_KEY", Buffer.alloc(32, 7).toString("base64"));
+    vi.stubEnv("MAIL_PROVIDER", "resend");
+    vi.stubEnv("RESEND_API_KEY", "re_test_key");
+    vi.stubEnv("MAIL_FROM", "noreply@example.com");
     vi.stubEnv("DATABASE_URL", "");
     vi.stubEnv("DATABASE_PATH", "");
     expect(() => assertProductionEnv()).toThrow(/DATABASE_URL/);

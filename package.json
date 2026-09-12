@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:pg": "node scripts/pg-concurrency-test.mjs",
     "db:check": "node scripts/db-security-check.mjs",
-    "check:pg-dialect": "node scripts/pg-dialect-check.mjs"
+    "check:pg-dialect": "node scripts/pg-dialect-check.mjs",
+    "postinstall": "node scripts/patch-postgres.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

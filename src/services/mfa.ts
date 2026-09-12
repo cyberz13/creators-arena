@@ -6,6 +6,7 @@ import type { User } from "@/lib/types";
 import { DomainError } from "./errors";
 import { consumeRateLimit } from "./rate-limit";
 import { logAdminAction } from "./adminActions";
+import { rotateAfterMfaEnrollment, type IssuedSession } from "./sessions";
 
 /**
  * Admin MFA (TOTP). Mandatory: an admin without MFA is redirected to
@@ -45,7 +46,18 @@ export async function beginMfaEnrollment(user: Pick<User, "id" | "email" | "mfa_
 }
 
 /** Confirms the authenticator with a live code; returns the recovery codes ONCE. */
-export async function completeMfaEnrollment(userId: string, code: string): Promise<string[]> {
+export interface EnrollmentResult {
+  recoveryCodes: string[];
+  /** Fresh MFA-verified session replacing the caller's; every other session was revoked. */
+  session: IssuedSession;
+}
+
+/**
+ * Finishes TOTP enrolment. Sessions that existed before this moment were
+ * authenticated by password only, so they are ALL revoked; the caller gets a
+ * new session marked mfa_verified (the cookie must be replaced).
+ */
+export async function completeMfaEnrollment(userId: string, code: string, currentSessionId: string): Promise<EnrollmentResult> {
   const user = await one<User>("SELECT * FROM users WHERE id = ?", userId);
   if (!user || !user.mfa_secret_enc) throw new DomainError("ابدأ التفعيل أولًا");
   if (Number(user.mfa_enabled) === 1) throw new DomainError("المصادقة الثنائية مفعّلة بالفعل");
@@ -66,8 +78,9 @@ export async function completeMfaEnrollment(userId: string, code: string): Promi
   }
   const changed = await execute("UPDATE users SET mfa_enabled = 1 WHERE id = ? AND mfa_enabled = 0", userId);
   if (changed !== 1) throw new DomainError("تعذر التفعيل — أعد المحاولة");
-  await logAdminAction(userId, "mfa_enrolled", "user", userId);
-  return codes;
+  const session = await rotateAfterMfaEnrollment(currentSessionId, { id: user.id, role: user.role });
+  await logAdminAction(userId, "mfa_enrolled", "user", userId, "sessions rotated");
+  return { recoveryCodes: codes, session };
 }
 
 /** TOTP code or a single-use recovery code. Rate limited per user. */

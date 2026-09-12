@@ -70,6 +70,8 @@ export interface SessionUser {
   approved: boolean;
   emailVerified: boolean;
   mfaEnabled: boolean;
+  /** THIS session passed TOTP (or completed enrolment). Admin access requires it once MFA is enabled. */
+  mfaVerified: boolean;
 }
 
 async function currentToken(): Promise<string | null> {
@@ -101,6 +103,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
       approved: Number(user.approved) === 1,
       emailVerified: Number(user.email_verified) === 1,
       mfaEnabled: Number(user.mfa_enabled) === 1,
+      mfaVerified: session.mfa_verified_at !== null && session.mfa_verified_at !== undefined,
     };
   } catch {
     return null;
@@ -126,11 +129,26 @@ export async function requireCreator(): Promise<SessionUser> {
 /**
  * Admin guard. MFA is mandatory: an admin who has not enrolled is sent to
  * /account/mfa (which calls this with allowUnenrolled) before anything else.
+ * Once MFA is enabled, only a session that itself passed TOTP is an admin
+ * session: a password-only session that predates enrolment is revoked and
+ * sent back to /login (see services/sessions.rotateAfterMfaEnrollment).
  */
 export async function requireAdmin(opts: { allowUnenrolled?: boolean } = {}): Promise<SessionUser> {
   const user = await getSessionUser();
   if (!user) redirect("/login");
   if (user.role !== "admin") redirect("/dashboard");
-  if (!user.mfaEnabled && !opts.allowUnenrolled) redirect("/account/mfa");
+  if (!user.mfaEnabled) {
+    if (!opts.allowUnenrolled) redirect("/account/mfa");
+    return user;
+  }
+  if (!user.mfaVerified) {
+    await destroySession();
+    redirect("/login");
+  }
   return user;
+}
+
+/** Pure decision used by requireAdmin (exported for tests). */
+export function adminSessionAllowed(s: { role: string; mfaEnabled: boolean; mfaVerified: boolean }): boolean {
+  return s.role === "admin" && s.mfaEnabled && s.mfaVerified;
 }

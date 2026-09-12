@@ -1,27 +1,34 @@
 import { id, now, run } from "@/lib/db";
+import { mailProviderConfig, type MailProviderName } from "@/lib/env";
 
 /**
  * Outbound e-mail with a pluggable provider.
- *  - "log" (default outside production): nothing leaves the machine; the
- *    message is stored in `mail_outbox` and printed to the server log so the
- *    flows can be exercised locally.
+ *  - "log": development/test ONLY. The message is stored in `mail_outbox` and
+ *    the console gets a one-line notice with the outbox id — never the body,
+ *    so reset links / verification tokens are never written to any log.
+ *    Refused in production.
  *  - "resend": Resend's HTTP API (no SDK, no native code). Requires
  *    RESEND_API_KEY and MAIL_FROM.
- * Every message is recorded in `mail_outbox` with its delivery status. This
- * module never throws to callers: an undeliverable e-mail must not break a
- * registration or a reset request (and must not reveal anything to the user).
+ *  - unset in production: mail is "not configured" — messages are recorded
+ *    as failed, nothing is sent, and flows that depend on delivery report it.
+ * Bodies are purged from the outbox after MAIL_BODY_RETENTION_MS.
  */
 
-export type MailProvider = "log" | "resend";
+export type MailProvider = MailProviderName;
+export const MAIL_BODY_RETENTION_MS = 7 * 86_400_000;
 
+/** Resolves the provider and validates its configuration (throws ConfigError on invalid production config). */
 export function mailProvider(): MailProvider {
-  const v = process.env.MAIL_PROVIDER;
-  return v === "resend" ? "resend" : "log";
+  return mailProviderConfig();
 }
 
-/** True only when a real provider is configured — flows that REQUIRE e-mail are gated on this. */
+/** True only when a real provider can deliver mail — flows that REQUIRE e-mail are gated on this. */
 export function mailEnabled(): boolean {
-  return mailProvider() === "resend" && !!process.env.RESEND_API_KEY && !!process.env.MAIL_FROM;
+  try {
+    return mailProvider() === "resend";
+  } catch {
+    return false;
+  }
 }
 
 export interface MailMessage {
@@ -30,9 +37,16 @@ export interface MailMessage {
   text: string;
 }
 
-export async function sendMail(msg: MailMessage): Promise<{ ok: boolean; id: string }> {
+export type MailResult = { ok: true; id: string } | { ok: false; id: string; reason: "not_configured" | "provider_error" };
+
+export async function sendMail(msg: MailMessage): Promise<MailResult> {
   const rowId = id();
-  const provider = mailProvider();
+  let provider: MailProvider;
+  try {
+    provider = mailProvider();
+  } catch {
+    provider = "none";
+  }
   await run(
     `INSERT INTO mail_outbox (id, to_email, subject, body, provider, status, created_at)
      VALUES (?, ?, ?, ?, ?, 'queued', ?)`,
@@ -43,10 +57,13 @@ export async function sendMail(msg: MailMessage): Promise<{ ok: boolean; id: str
     provider,
     now()
   );
+  if (provider === "none") {
+    await run("UPDATE mail_outbox SET status = 'failed', error = 'mail_not_configured' WHERE id = ?", rowId);
+    return { ok: false, id: rowId, reason: "not_configured" };
+  }
   if (provider === "log") {
-    if (process.env.NODE_ENV !== "test") {
-      console.log(`[mail:log] to=${msg.to} subject=${msg.subject}\n${msg.text}`);
-    }
+    // Dev convenience only: point at the outbox row; the body (and any token) stays out of the log.
+    if (process.env.NODE_ENV !== "test") console.log(`[mail:log] queued to=${msg.to} subject="${msg.subject}" outbox=${rowId}`);
     await run("UPDATE mail_outbox SET status = 'sent', sent_at = ? WHERE id = ?", now(), rowId);
     return { ok: true, id: rowId };
   }
@@ -69,6 +86,11 @@ export async function sendMail(msg: MailMessage): Promise<{ ok: boolean; id: str
       String((e as Error).message ?? e).slice(0, 200),
       rowId
     );
-    return { ok: false, id: rowId };
+    return { ok: false, id: rowId, reason: "provider_error" };
   }
+}
+
+/** Retention: message bodies (which may contain one-time links) are blanked after the window. */
+export async function purgeMailBodies(nowMs = now()): Promise<void> {
+  await run("UPDATE mail_outbox SET body = '' WHERE created_at < ? AND body <> ''", nowMs - MAIL_BODY_RETENTION_MS);
 }

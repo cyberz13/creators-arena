@@ -34,7 +34,7 @@ try {
   for (const a of alters) await db.exec(a); // re-runnable
   check(alters.length >= 10, `schema.pg.sql applied; ${alters.length} additive ALTER/UPDATE statements re-ran cleanly`);
   const tables = (await db.query("SELECT COUNT(*)::int AS n FROM information_schema.tables WHERE table_schema='public'")).rows[0].n;
-  check(tables === 20, `20 application tables present (${tables})`);
+  check(tables === 21, `21 application tables present (${tables})`);
 
   // 2. migration 0001 with Supabase roles present
   await db.exec("CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; GRANT USAGE ON SCHEMA public TO anon, authenticated; GRANT SELECT ON ALL TABLES IN SCHEMA public TO anon, authenticated;");
@@ -48,13 +48,13 @@ try {
   const anonTables = (await db.query("SELECT COUNT(*)::int AS n FROM information_schema.role_table_grants WHERE grantee IN ('anon','authenticated') AND table_schema='public'")).rows[0].n;
   check(anonTables === 0, `no explicit table grants remain for anon/authenticated (${anonTables})`);
   const rls = (await db.query("SELECT COUNT(*)::int AS n FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND relkind='r' AND relrowsecurity")).rows[0].n;
-  check(rls === 20, `RLS enabled on all 20 tables (${rls})`);
+  check(rls === 21, `RLS enabled on all 21 tables (${rls})`);
   const runtime = (await db.query("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname='app_runtime'")).rows[0];
   check(!!runtime && !runtime.rolsuper && !runtime.rolbypassrls, "app_runtime exists without superuser/bypassrls");
   const policies = (await db.query("SELECT COUNT(*)::int AS n FROM pg_policies WHERE policyname='app_runtime_all'")).rows[0].n;
-  check(policies === 20, `app_runtime_all policy on all tables (${policies})`);
+  check(policies === 21, `app_runtime_all policy on all tables (${policies})`);
   const grants = (await db.query("SELECT COUNT(DISTINCT table_name)::int AS n FROM information_schema.role_table_grants WHERE grantee='app_runtime' AND privilege_type='UPDATE'")).rows[0].n;
-  check(grants === 20, `app_runtime has DML on all tables (${grants})`);
+  check(grants === 21, `app_runtime has DML on all tables (${grants})`);
   // Running as app_runtime through RLS returns rows (policy works)
   await db.exec("INSERT INTO settings (key, value) VALUES ('probe','1')");
   await db.exec("SET ROLE app_runtime");

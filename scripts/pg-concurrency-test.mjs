@@ -9,7 +9,13 @@
  *   - concurrent review of the same click → counters move exactly once;
  *   - concurrent payout transitions → exactly one wins per step; paid is final;
  *   - concurrent clicks on one campaign + IP → counters equal the click log,
- *     device-cap fairness holds, no leaked qualified duplicates.
+ *     device-cap fairness holds, no leaked qualified duplicates;
+ *   - (second review) concurrent auto-resolution of held duplicate clicks →
+ *     exactly one qualifies; the same challenge nonce replayed from many
+ *     processes → one click; disabling a winner while payouts race → money
+ *     never moves to an ineligible beneficiary; keyed transactions replayed
+ *     concurrently apply once; a connection killed mid-transaction surfaces
+ *     as "uncertain" (no key) or is replayed exactly once (with key).
  *
  * Usage (local docker, see PRODUCTION_CHECKLIST.md):
  *   TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5433/creators_arena_test \
@@ -154,6 +160,101 @@ try {
     check(audit.n === 2 && paidNotes.n === 1, `D: audit rows = 2, paid notification = 1 (audit=${audit.n}, notes=${paidNotes.n})`);
     const final = await one("SELECT status FROM payouts WHERE id = $1", [payout.id]);
     check(final.status === "paid", "D: payout ends paid");
+  }
+
+  // ---- Scenario E: concurrent auto-resolution of held duplicates (second review B01/B02)
+  {
+    await sql.unsafe("INSERT INTO settings (key, value) VALUES ('ip_intel_enabled','1') ON CONFLICT (key) DO UPDATE SET value = '1'");
+    const { campaignId, links } = await fixtures(1);
+    // 3 held clicks from ONE identity (session/device) + 1 held click without sec-fetch from another identity
+    for (const nonce of ["n-e1", "n-e2", "n-e3"]) {
+      const r = await runWorker("click-replay", { code: links[0].code, ipHash: "held-ip", sessionId: "same-sess", deviceHash: "same-dev", nonce });
+      if (r.error) check(false, "E: click worker failed — " + r.error);
+    }
+    const held = await sql.unsafe("SELECT id, reject_reason FROM clicks WHERE campaign_id = $1 ORDER BY created_at, id", [campaignId]);
+    check(held.length === 3 && held.every((r) => r.reject_reason === "ip_unverified"), `E: 3 clicks held as ip_unverified (${held.map((r) => r.reject_reason).join(",")})`);
+    const linkRow = await one("SELECT id FROM tracking_links WHERE code = $1", [links[0].code]);
+    await sql.unsafe(
+      "INSERT INTO clicks (id, tracking_link_id, campaign_id, user_id, status, reject_reason, ip_hash, session_id, device_hash, user_agent, source, signals, created_at) VALUES ($1,$2,$3,$4,'pending_review','ip_unverified','held-ip','other-sess','other-dev','Mozilla/5.0 (iPhone) Safari','direct',$5,$6)",
+      [randomUUID(), linkRow.id, campaignId, links[0].uid, JSON.stringify({ sf: false, wd: 0 }), Date.now()]
+    );
+    await sql.unsafe("UPDATE campaign_participants SET total_clicks = total_clicks + 1, pending_count = pending_count + 1 WHERE campaign_id = $1", [campaignId]);
+    await sql.unsafe("INSERT INTO ip_intel (ip_hash, risky, checked_at) VALUES ('held-ip', 0, $1) ON CONFLICT (ip_hash) DO UPDATE SET risky = 0, checked_at = $1", [Date.now()]);
+    const ids = (await sql.unsafe("SELECT id FROM clicks WHERE campaign_id = $1 ORDER BY created_at, id", [campaignId])).map((r) => r.id);
+    const orders = [ids, [...ids].reverse(), [ids[1], ids[0], ids[3], ids[2]], ids, [...ids].reverse(), [ids[2], ids[1], ids[0], ids[3]]];
+    const results = await Promise.all(orders.map((o) => runWorker("autoresolve", { clickIds: o.join(",") })));
+    const errors = results.filter((r) => r.error);
+    check(errors.length === 0, "E: all auto-resolve workers completed" + (errors[0] ? " — " + errors[0].error : ""));
+    const qualifiedOutcomes = results.flatMap((r) => r.outcomes ?? []).filter((o) => o === "qualified").length;
+    const logE = await one("SELECT SUM((status='qualified')::int)::int AS q, SUM((status='rejected')::int)::int AS r, SUM((status='pending_review')::int)::int AS pe, SUM((reject_reason='missing_sec_fetch')::int)::int AS nosf FROM clicks WHERE campaign_id = $1", [campaignId]);
+    check(qualifiedOutcomes === 1 && logE.q === 1, `E: exactly one duplicate qualified across 6 racing processes (outcomes=${qualifiedOutcomes}, log=${logE.q})`);
+    check(logE.r === 2 && logE.pe === 1 && logE.nosf === 1, `E: other duplicates rejected; the no-sec-fetch click stays pending as missing_sec_fetch (r=${logE.r} pending=${logE.pe} nosf=${logE.nosf})`);
+    const pE = await one("SELECT qualified_count, rejected_count, pending_count, total_clicks FROM campaign_participants WHERE campaign_id = $1", [campaignId]);
+    check(Number(pE.qualified_count) === 1 && Number(pE.rejected_count) === 2 && Number(pE.pending_count) === 1 && Number(pE.total_clicks) === 4, `E: counters equal the click log after concurrent resolution (q=${pE.qualified_count} r=${pE.rejected_count} p=${pE.pending_count} t=${pE.total_clicks})`);
+    const override = await one("SELECT COUNT(*)::int AS n FROM admin_actions WHERE action LIKE 'click_review_%' AND target_id = ANY($1)", [ids]);
+    const auto = await one("SELECT COUNT(*)::int AS n FROM admin_actions WHERE action = 'click_auto_qualified' AND target_id = ANY($1)", [ids]);
+    check(override.n === 0 && auto.n === 1, `E: approval recorded as a pipeline decision, not an admin override (auto=${auto.n}, override=${override.n})`);
+    await sql.unsafe("UPDATE settings SET value = '0' WHERE key = 'ip_intel_enabled'");
+  }
+
+  // ---- Scenario F: one challenge nonce replayed from 6 processes → one click (idempotency ledger)
+  {
+    const { campaignId, links } = await fixtures(1);
+    const results = await Promise.all(Array.from({ length: 6 }, () => runWorker("click-replay", { code: links[0].code, ipHash: "replay-ip", sessionId: "replay-s", deviceHash: "replay-d", nonce: "same-nonce" })));
+    const errors = results.filter((r) => r.error);
+    check(errors.length === 0, "F: all replay workers completed" + (errors[0] ? " — " + errors[0].error : ""));
+    check(results.every((r) => r.status === "qualified"), `F: every process got the same answer (${results.map((r) => r.status).join(",")})`);
+    const n = await one("SELECT COUNT(*)::int AS n FROM clicks WHERE campaign_id = $1", [campaignId]);
+    const pF = await one("SELECT total_clicks, qualified_count FROM campaign_participants WHERE campaign_id = $1", [campaignId]);
+    check(n.n === 1 && Number(pF.total_clicks) === 1 && Number(pF.qualified_count) === 1, `F: one click recorded and counted once (clicks=${n.n}, total=${pF.total_clicks}, q=${pF.qualified_count})`);
+    const ledger = await one("SELECT COUNT(*)::int AS n FROM tx_ledger WHERE key = 'click:same-nonce'");
+    check(ledger.n === 1, "F: one ledger row for the nonce");
+  }
+
+  // ---- Scenario G: disabling the winner races with approve/pay
+  {
+    const { adminId, campaignId, links } = await fixtures(2);
+    await runWorker("clicks", { code: links[0].code, ipHash: "g-ip-0", worker: "g0", count: 2 });
+    await runWorker("clicks", { code: links[1].code, ipHash: "g-ip-1", worker: "g1", count: 1 });
+    await runWorker("finalize", { campaignId });
+    await runWorker("confirm", { campaignId, adminId });
+    const first = await one("SELECT id, user_id FROM payouts WHERE campaign_id = $1 AND prize_rank = 1", [campaignId]);
+    check(first.user_id === links[0].uid, "G: rank-1 payout belongs to the leader before the race");
+    const race = await Promise.all([
+      runWorker("disable", { userId: links[0].uid, adminId }),
+      runWorker("payout", { payoutId: first.id, status: "approved", adminId }),
+      runWorker("payout", { payoutId: first.id, status: "approved", adminId }),
+      runWorker("payout", { payoutId: first.id, status: "paid", adminId }),
+    ]);
+    check(race[0].ok === true, "G: disable applied" + (race[0].error ? " — " + race[0].error : ""));
+    const rank1 = await one("SELECT id, user_id, status FROM payouts WHERE campaign_id = $1 AND prize_rank = 1", [campaignId]);
+    const disabledPaid = await one("SELECT COUNT(*)::int AS n FROM payouts WHERE campaign_id = $1 AND user_id = $2 AND status IN ('approved','paid')", [campaignId, links[0].uid]);
+    check(disabledPaid.n === 0, `G: the disabled creator never holds an approved/paid payout (${disabledPaid.n})`);
+    check(!!rank1 && rank1.user_id === links[1].uid, `G: rank-1 payout reassigned to the next eligible creator (owner=${rank1?.user_id === links[1].uid ? "next" : "other"}, status=${rank1?.status})`);
+    const recomputed = await one("SELECT COUNT(*)::int AS n FROM admin_actions WHERE action = 'results_recomputed' AND target_id = $1", [campaignId]);
+    check(recomputed.n === 1, "G: recompute audited once");
+  }
+
+  // ---- Scenario H: transaction retry semantics on real connection loss
+  {
+    await sql.unsafe("INSERT INTO settings (key, value) VALUES ('h-counter','0') ON CONFLICT (key) DO UPDATE SET value = '0'");
+    const keyed = await Promise.all(Array.from({ length: 6 }, (_, i) => runWorker("ledger-tx", { key: "h-key-1", counterKey: "h-counter", worker: "h" + i })));
+    const errorsH = keyed.filter((r) => r.error);
+    check(errorsH.length === 0, "H: keyed workers completed" + (errorsH[0] ? " — " + errorsH[0].error : ""));
+    const hv = await one("SELECT value FROM settings WHERE key = 'h-counter'");
+    check(hv.value === "1" && keyed.every((r) => r.applied === true), `H: 6 concurrent runs with one idempotency key applied exactly once (counter=${hv.value})`);
+    const winner = new Set(keyed.map((r) => r.worker));
+    check(winner.size === 1, `H: every process got the stored result of the single execution (workers seen=${[...winner].join(",")})`);
+
+    await sql.unsafe("UPDATE settings SET value = '0' WHERE key = 'h-counter'");
+    const lost = await runWorker("uncertain-write", { counterKey: "h-counter" });
+    const afterLost = await one("SELECT value FROM settings WHERE key = 'h-counter'");
+    check(lost.outcome === "uncertain", `H: connection killed mid-transaction without a key → DbUncertainError, not a silent replay (outcome=${lost.outcome}${lost.error ? " " + lost.error : ""})`);
+    check(afterLost.value === "0", `H: the killed transaction did not apply (counter=${afterLost.value})`);
+    const lostKeyed = await runWorker("uncertain-write", { counterKey: "h-counter", key: "h-key-2" });
+    const afterKeyed = await one("SELECT value FROM settings WHERE key = 'h-counter'");
+    // the keyed retry re-runs the same body, which kills its backend again → still not committed, applied at most once
+    check(lostKeyed.outcome !== "committed" && Number(afterKeyed.value) <= 1, `H: keyed retry after a lost connection never applies twice (outcome=${lostKeyed.outcome}, counter=${afterKeyed.value})`);
   }
 } catch (e) {
   check(false, "run: " + String(e?.message ?? e));

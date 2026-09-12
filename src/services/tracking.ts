@@ -25,6 +25,43 @@ export interface IncomingClick {
   /** Forensic JSON from the JS challenge (elapsed ms, interaction count, …). */
   signals?: string | null;
   nowMs?: number;
+  /**
+   * Stable key for this exact request (the consumed challenge nonce). Lets the
+   * data layer replay — not re-execute — the click if the commit outcome was
+   * lost in transit. Optional for callers without a nonce (bot short-circuit).
+   */
+  idempotencyKey?: string;
+}
+
+/** Request-time signals persisted with the click so a later re-evaluation sees exactly what the request had. */
+export interface StoredSignals {
+  /** sec-fetch-* headers present on the navigation. */
+  sf?: boolean;
+  /** navigator.webdriver reported by the challenge. */
+  wd?: boolean;
+  [k: string]: unknown;
+}
+
+export function parseSignals(raw: string | null | undefined): StoredSignals {
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as StoredSignals) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Adds request facts without clobbering what the route already stored (e.g. its numeric `wd`). */
+function mergeSignals(raw: string | null | undefined, extra: StoredSignals): string {
+  const base = parseSignals(raw);
+  for (const [k, v] of Object.entries(extra)) if (base[k] === undefined) base[k] = v;
+  return JSON.stringify(base);
+}
+
+/** `wd` may be stored as 1/0 (route) or true/false (services). */
+function truthyFlag(v: unknown): boolean {
+  return v === true || v === 1 || v === "1";
 }
 
 export interface ClickResult {
@@ -112,13 +149,15 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
       detectSource(input.referer, input.utmSource),
       input.geoCountry ?? null,
       input.geoCity ?? null,
-      input.signals ?? null,
+      // sec-fetch / webdriver are stored with the click: a held click is later
+      // re-evaluated against the SAME request facts, never assumed clean.
+      mergeSignals(input.signals, { sf: input.hasSecFetch ?? true, wd: input.webdriver ?? false }),
       nowMs
     );
     await applyCounterDelta(link, v.status, nowMs, +1);
     if (v.status === "qualified") await notifyRankChanges(link.campaign_id, link.user_id, prev);
     return { verdict: v, previousLeader: prev, storeUrl: campaign.store_url };
-  });
+  }, { idempotencyKey: input.idempotencyKey ? `click:${input.idempotencyKey}` : undefined });
   void previousLeader;
 
   return { redirectUrl: storeUrl, status: verdict.status };
@@ -309,33 +348,127 @@ async function applyReviewCounters(link: TrackingLink, click: Click, newStatus: 
   );
 }
 
+export type AutoResolveOutcome = "qualified" | "pending_review" | "rejected" | "unchanged" | "deferred";
+
 /**
- * Clicks held as `ip_unverified` are resolved automatically once a fresh
- * network verdict exists: clean → qualified (system-logged), risky → stays in
- * review as `risky_ip`. Campaigns with FINAL results are left for the admin.
- * Runs from the lifecycle sweep and right after an IP lookup completes.
+ * Re-evaluates ONE click held as `ip_unverified` now that a network verdict
+ * may exist. This is NOT the admin override: the click goes through the full
+ * fraud pipeline again (eligibility, bot/automation, rate, session/device
+ * dedup, device cap, volume, sec-fetch) using the request facts stored with
+ * it, with its own row excluded from the counts, inside one transaction that
+ * holds the campaign lock exclusively plus the ip/session/device locks (same
+ * order as recordClick) — so two duplicates re-evaluated concurrently can
+ * never both qualify, and a live click cannot slip in between.
+ *  - clean verdict + pipeline says qualified → qualified (system-logged);
+ *  - pipeline says pending for another reason → stays pending with THAT reason;
+ *  - pipeline says rejected (e.g. duplicate) → rejected;
+ *  - risky verdict → stays pending as `risky_ip`;
+ *  - campaign results FINAL → left for the admin ("deferred").
+ * Ended (provisional) campaigns get their standings recomputed in the same transaction.
+ */
+export async function autoResolveHeldClick(clickId: string): Promise<AutoResolveOutcome> {
+  await ensureSystemActor();
+  return tx(async () => {
+    const before = await one<Click>("SELECT * FROM clicks WHERE id = ?", clickId);
+    if (!before || before.status !== "pending_review" || before.reject_reason !== "ip_unverified") return "unchanged";
+    await txSerializeOn(campaignLockKey(before.campaign_id));
+    await txSerializeOn(`click-ip:${before.campaign_id}:${before.ip_hash}`);
+    await txSerializeOn(`click-sess:${before.campaign_id}:${before.session_id}`);
+    await txSerializeOn(`click-dev:${before.campaign_id}:${before.device_hash ?? ""}`);
+    // Re-read under the locks: a concurrent resolver may have handled it already.
+    const click = await one<Click>("SELECT * FROM clicks WHERE id = ?", clickId);
+    if (!click || click.status !== "pending_review" || click.reject_reason !== "ip_unverified") return "unchanged";
+
+    const intel = await getIpIntel(click.ip_hash);
+    if (!intel) return "unchanged";
+    const campaign = (await one<{ id: string; status: string; results_status: string; title: string }>(
+      "SELECT id, status, results_status, title FROM campaigns WHERE id = ?",
+      click.campaign_id
+    ))!;
+    if (campaign.results_status === "final") return "deferred";
+    if (Number(intel.risky)) {
+      await run("UPDATE clicks SET reject_reason = 'risky_ip' WHERE id = ? AND reject_reason = 'ip_unverified'", click.id);
+      return "pending_review";
+    }
+
+    const link = (await one<LinkContext>(
+      `SELECT t.*, p.excluded, u.status AS user_status, u.participation_status
+       FROM tracking_links t
+       JOIN campaign_participants p ON p.id = t.participant_id
+       JOIN users u ON u.id = t.user_id
+       WHERE t.id = ?`,
+      click.tracking_link_id
+    ))!;
+    const eligible =
+      Number(link.excluded) === 0 && link.user_status === "active" && link.participation_status === "active";
+    const sig = parseSignals(click.signals);
+    const v = !eligible
+      ? { status: "rejected" as const, reason: "ineligible" }
+      : await classifyClick({
+          campaignId: click.campaign_id,
+          ipHash: click.ip_hash,
+          sessionId: click.session_id,
+          deviceHash: click.device_hash ?? "",
+          userAgent: click.user_agent,
+          // Missing stored facts are never assumed clean (legacy rows → review).
+          hasSecFetch: sig.sf === true,
+          webdriver: truthyFlag(sig.wd),
+          nowMs: Number(click.created_at),
+          intelNowMs: Date.now(),
+          excludeClickId: click.id,
+        });
+
+    if (v.status === "pending_review") {
+      if (v.reason === "ip_unverified") return "unchanged";
+      await run(
+        "UPDATE clicks SET reject_reason = ? WHERE id = ? AND status = 'pending_review' AND reject_reason = 'ip_unverified'",
+        v.reason,
+        click.id
+      );
+      await logAdminAction(SYSTEM_ACTOR_ID, "click_auto_hold", "click", click.id, `auto: ${v.reason}`);
+      return "pending_review";
+    }
+
+    const prev = v.status === "qualified" ? await currentLeader(click.campaign_id) : null;
+    const changed = await execute(
+      "UPDATE clicks SET status = ?, reject_reason = ? WHERE id = ? AND status = 'pending_review' AND reject_reason = 'ip_unverified'",
+      v.status,
+      v.reason,
+      click.id
+    );
+    if (changed !== 1) return "unchanged";
+    await applyReviewCounters(link, click, v.status);
+    await logAdminAction(
+      SYSTEM_ACTOR_ID,
+      `click_auto_${v.status}`,
+      "click",
+      click.id,
+      v.status === "qualified" ? "auto: network verdict clean, pipeline passed" : `auto: ${v.reason}`
+    );
+    if (campaign.status === "ended") {
+      await recomputeStandings(campaign.id, SYSTEM_ACTOR_ID); // provisional only (final → deferred above)
+    } else if (v.status === "qualified") {
+      await notifyRankChanges(click.campaign_id, click.user_id, prev);
+    }
+    return v.status;
+  });
+}
+
+/**
+ * Clicks held as `ip_unverified` are re-evaluated automatically once a fresh
+ * network verdict exists (see autoResolveHeldClick). Oldest first, so among
+ * duplicates the earliest click is the one that can qualify. Runs from the
+ * lifecycle sweep and right after an IP lookup completes.
  */
 export async function reevaluateIpUnverified(ipHash?: string, limit = 200): Promise<number> {
-  await ensureSystemActor();
-  const rows = await q<Click>(
-    `SELECT * FROM clicks WHERE status = 'pending_review' AND reject_reason = 'ip_unverified'
-     ${ipHash ? "AND ip_hash = ?" : ""} ORDER BY created_at ASC LIMIT ?`,
+  const rows = await q<{ id: string }>(
+    `SELECT id FROM clicks WHERE status = 'pending_review' AND reject_reason = 'ip_unverified'
+     ${ipHash ? "AND ip_hash = ?" : ""} ORDER BY created_at ASC, id ASC LIMIT ?`,
     ...(ipHash ? [ipHash, limit] : [limit])
   );
   let resolved = 0;
-  for (const click of rows) {
-    const intel = await getIpIntel(click.ip_hash);
-    if (!intel) continue;
-    if (Number(intel.risky)) {
-      await run("UPDATE clicks SET reject_reason = 'risky_ip' WHERE id = ? AND reject_reason = 'ip_unverified'", click.id);
-      continue;
-    }
-    try {
-      await reviewClick(click.id, "qualified", SYSTEM_ACTOR_ID, "auto: network verdict clean");
-      resolved += 1;
-    } catch (e) {
-      if (!(e instanceof DomainError)) throw e; // final results etc. → admin handles it
-    }
+  for (const row of rows) {
+    if ((await autoResolveHeldClick(row.id)) === "qualified") resolved += 1;
   }
   return resolved;
 }

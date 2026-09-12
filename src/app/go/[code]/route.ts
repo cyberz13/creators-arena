@@ -148,7 +148,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ code: strin
   if (token !== null) {
     const verdict = await consumeChallenge(token, code, ipHash, visitorId);
     if (verdict !== "ok") {
-      // Never trap the visitor; simply don't count.
+      // invalid / expired / replayed / no_visitor / visitor_mismatch:
+      // never trap the visitor; simply don't count.
       return redirectTo(link.store_url);
     }
     // Make sure the network verdict is in place before classifying (bounded wait).
@@ -170,6 +171,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ code: strin
       webdriver,
       geoCountry,
       geoCity,
+      // The consumed nonce is unique per interstitial → exact replay key for the data layer.
+      idempotencyKey: token,
       signals: JSON.stringify({
         el: Number.isFinite(elapsed) ? Math.min(elapsed, 600_000) : null,
         ix: Number.isFinite(interactions) ? Math.min(interactions, 10_000) : null,

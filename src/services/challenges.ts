@@ -20,13 +20,13 @@ export async function issueChallenge(code: string, ipHash: string, visitorId: st
   return signChallenge(nonce, code, ipHash);
 }
 
-export type ChallengeVerdict = "ok" | "invalid" | "expired" | "replayed" | "visitor_mismatch";
+export type ChallengeVerdict = "ok" | "invalid" | "expired" | "replayed" | "visitor_mismatch" | "no_visitor";
 
 /**
  * Validates signature, binding, freshness, and consumes the nonce atomically.
- * `visitorId` must match the one the challenge was issued to when the visitor
- * presented a cookie at issue time (cookie-less visitors are still bound by
- * code + IP + nonce).
+ * Every challenge is issued to a visitor id (the cookie set on step 1); the
+ * same id MUST come back on step 2. A missing or different cookie never
+ * counts — the visitor is still redirected to the store, just not scored.
  */
 export async function consumeChallenge(
   token: string,
@@ -46,7 +46,8 @@ export async function consumeChallenge(
   if (!row) return "invalid";
   if (row.consumed_at !== null) return "replayed";
   if (nowMs - Number(row.issued_at) > CHALLENGE_TTL_MS || Number(row.issued_at) - nowMs > 5_000) return "expired";
-  if (row.visitor_id && visitorId && row.visitor_id !== visitorId) return "visitor_mismatch";
+  if (!visitorId) return "no_visitor";
+  if (row.visitor_id !== visitorId) return "visitor_mismatch";
   const changed = await execute(
     "UPDATE challenges SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL",
     nowMs,

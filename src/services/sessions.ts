@@ -29,6 +29,7 @@ export interface SessionRow {
   expires_at: number;
   last_seen_at: number;
   revoked_at: number | null;
+  mfa_verified_at: number | null;
   ip_hash: string | null;
   user_agent: string | null;
 }
@@ -46,7 +47,7 @@ export interface IssuedSession {
 export async function issueSession(
   user: Pick<User, "id" | "role">,
   stage: SessionStage,
-  meta: { ipHash?: string | null; userAgent?: string | null } = {},
+  meta: { ipHash?: string | null; userAgent?: string | null; mfaVerified?: boolean } = {},
   nowMs = now()
 ): Promise<IssuedSession> {
   const token = randomBytes(32).toString("base64url");
@@ -54,8 +55,8 @@ export async function issueSession(
   const ttl = stage === "mfa_pending" ? 10 * 60_000 : SESSION_TTL_MS[user.role];
   const expiresAt = nowMs + ttl;
   await run(
-    `INSERT INTO sessions (id, user_id, token_hash, stage, created_at, expires_at, last_seen_at, ip_hash, user_agent)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO sessions (id, user_id, token_hash, stage, created_at, expires_at, last_seen_at, mfa_verified_at, ip_hash, user_agent)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     sessionId,
     user.id,
     hashSessionToken(token),
@@ -63,6 +64,7 @@ export async function issueSession(
     nowMs,
     expiresAt,
     nowMs,
+    meta.mfaVerified ? nowMs : null,
     meta.ipHash ?? null,
     meta.userAgent ? meta.userAgent.slice(0, 256) : null
   );
@@ -90,7 +92,7 @@ export async function resolveSession(token: string, nowMs = now()): Promise<Reso
   return { session, user };
 }
 
-/** Promotes an mfa_pending session to a full one by ROTATING the token (old one dies). */
+/** Promotes an mfa_pending session to a full, MFA-verified one by ROTATING the token (old one dies). */
 export async function upgradeSession(sessionId: string, user: Pick<User, "id" | "role">, nowMs = now()): Promise<IssuedSession> {
   const changed = await execute(
     "UPDATE sessions SET revoked_at = ? WHERE id = ? AND stage = 'mfa_pending' AND revoked_at IS NULL",
@@ -98,7 +100,17 @@ export async function upgradeSession(sessionId: string, user: Pick<User, "id" | 
     sessionId
   );
   if (changed !== 1) throw new Error("session_not_upgradable");
-  return issueSession(user, "full", {}, nowMs);
+  return issueSession(user, "full", { mfaVerified: true }, nowMs);
+}
+
+/**
+ * After MFA enrolment: EVERY other session of the user dies (they were
+ * password-only), and the current one is rotated into an MFA-verified session.
+ */
+export async function rotateAfterMfaEnrollment(currentSessionId: string, user: Pick<User, "id" | "role">, nowMs = now()): Promise<IssuedSession> {
+  await run("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", nowMs, user.id);
+  void currentSessionId; // revoked with the rest; a fresh token replaces it
+  return issueSession(user, "full", { mfaVerified: true }, nowMs);
 }
 
 export async function revokeSession(sessionId: string, nowMs = now()): Promise<void> {

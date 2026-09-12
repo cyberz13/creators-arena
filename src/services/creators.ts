@@ -4,6 +4,7 @@ import type { Category, CreatorProfile, User } from "@/lib/types";
 import { DomainError } from "./errors";
 import { notify } from "./notifications";
 import { logAdminAction } from "./adminActions";
+import { recomputeAfterEligibilityChange } from "./results";
 
 export interface RegisterInput {
   name: string;
@@ -167,14 +168,12 @@ export async function setUserStatus(
   const user = await one<User>("SELECT * FROM users WHERE id = ?", userId);
   if (!user) throw new DomainError("المستخدم غير موجود");
   if (user.role === "admin") throw new DomainError("لا يمكن تعطيل حساب Admin");
-  await run("UPDATE users SET status = ? WHERE id = ?", status, userId);
-  await logAdminAction(
-    adminId,
-    status === "disabled" ? "user_disable" : "user_enable",
-    "user",
-    userId,
-    reason
-  );
+  const action = status === "disabled" ? "user_disable" : "user_enable";
+  await tx(async () => {
+    await run("UPDATE users SET status = ? WHERE id = ?", status, userId);
+    await logAdminAction(adminId, action, "user", userId, reason);
+    await recomputeAfterEligibilityChange(userId, adminId, `${action}: ${reason}`);
+  });
 }
 
 /** Login stays allowed; scoring and prizes stop until lifted. Logged. */
@@ -187,14 +186,12 @@ export async function setParticipationStatus(
   const user = await one<User>("SELECT * FROM users WHERE id = ?", userId);
   if (!user) throw new DomainError("المستخدم غير موجود");
   if (user.role === "admin") throw new DomainError("لا ينطبق على حساب Admin");
-  await run("UPDATE users SET participation_status = ? WHERE id = ?", status, userId);
-  await logAdminAction(
-    adminId,
-    status === "suspended" ? "participation_suspend" : "participation_resume",
-    "user",
-    userId,
-    reason
-  );
+  const action = status === "suspended" ? "participation_suspend" : "participation_resume";
+  await tx(async () => {
+    await run("UPDATE users SET participation_status = ? WHERE id = ?", status, userId);
+    await logAdminAction(adminId, action, "user", userId, reason);
+    await recomputeAfterEligibilityChange(userId, adminId, `${action}: ${reason}`);
+  });
 }
 
 /** Registration approval (REGISTRATION_MODE=pending_approval). Logged; the creator is notified. */

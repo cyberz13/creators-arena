@@ -118,6 +118,36 @@ export async function notifyWinners(campaign: Campaign, r: Recomputed): Promise<
   }
 }
 
+/**
+ * After a user's eligibility changed (account disabled/enabled, participation
+ * suspended/resumed): every ENDED campaign they took part in is recomputed
+ * under its campaign lock, in the caller's transaction. Payouts that are not
+ * paid follow the new standings (reassigned or removed by recomputeStandings);
+ * a PAID payout is never touched — the conflict is recorded as an admin
+ * action (`results_conflict`) for manual settlement instead of blocking the
+ * status change. Confirmed campaigns notify the (new) winners.
+ */
+export async function recomputeAfterEligibilityChange(userId: string, actorId: string, why: string): Promise<void> {
+  const campaigns = await q<Campaign>(
+    `SELECT c.* FROM campaigns c
+     JOIN campaign_participants p ON p.campaign_id = c.id
+     WHERE p.user_id = ? AND c.status = 'ended'
+     ORDER BY c.id`,
+    userId
+  );
+  for (const c of campaigns) {
+    await txSerializeOn(campaignLockKey(c.id));
+    try {
+      const r = await recomputeStandings(c.id, actorId);
+      await logAdminAction(actorId, "results_recomputed", "campaign", c.id, why);
+      if (c.results_status === "final") await notifyWinners(c, r);
+    } catch (e) {
+      if (!(e instanceof DomainError)) throw e;
+      await logAdminAction(actorId, "results_conflict", "campaign", c.id, `${why} — ${e.message}`);
+    }
+  }
+}
+
 async function lockedCampaign(campaignId: string): Promise<Campaign> {
   await txSerializeOn(campaignLockKey(campaignId));
   const c = await one<Campaign>("SELECT * FROM campaigns WHERE id = ?", campaignId);

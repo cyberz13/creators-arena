@@ -94,6 +94,30 @@ export function registrationMode(): RegistrationMode {
   return isProduction() ? "pending_approval" : "open";
 }
 
+export type MailProviderName = "log" | "resend" | "none";
+
+/**
+ * Mail transport selection, validated:
+ *  - "resend" needs RESEND_API_KEY and MAIL_FROM;
+ *  - "log" (console + outbox, no delivery) is refused in production;
+ *  - unset → "log" in development/test, "none" (not configured) in production.
+ * Throws ConfigError on an invalid combination so a bad deploy fails at boot.
+ */
+export function mailProviderConfig(): MailProviderName {
+  const v = raw("MAIL_PROVIDER");
+  if (v === "resend") {
+    if (!raw("RESEND_API_KEY")) throw new ConfigError("RESEND_API_KEY", "is required when MAIL_PROVIDER=resend");
+    if (!raw("MAIL_FROM")) throw new ConfigError("MAIL_FROM", "is required when MAIL_PROVIDER=resend");
+    return "resend";
+  }
+  if (v === "log") {
+    if (isProduction()) throw new ConfigError("MAIL_PROVIDER", "log is not allowed in production (no delivery)");
+    return "log";
+  }
+  if (v !== undefined) throw new ConfigError("MAIL_PROVIDER", "must be resend or log");
+  return isProduction() ? "none" : "log";
+}
+
 /**
  * Validates every production-critical variable at once. Called from
  * instrumentation.ts so a misconfigured deploy fails at boot, not on the
@@ -106,6 +130,8 @@ export function assertProductionEnv(): void {
   ipHashSalt();
   appUrl();
   registrationMode();
+  mfaEncryptionKey();
+  mailProviderConfig();
   // Postgres is mandatory in production unless SQLite is opted into explicitly
   // (local smoke tests of the production build). Vercel has no durable disk.
   if (!raw("DATABASE_URL") && (!raw("DATABASE_PATH") || raw("VERCEL")))

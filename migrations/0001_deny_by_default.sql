@@ -59,6 +59,7 @@ ALTER TABLE public.rate_limits          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.auth_tokens          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.mail_outbox          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.mfa_recovery_codes   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tx_ledger            ENABLE ROW LEVEL SECURITY;
 
 -- 3) Limited runtime role for the application ---------------------------------
 DO $$
@@ -74,7 +75,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
   public.campaign_participants, public.tracking_links, public.clicks, public.ip_intel,
   public.campaign_daily_stats, public.payouts, public.notifications, public.admin_actions,
   public.settings, public.challenges, public.sessions, public.rate_limits, public.auth_tokens,
-  public.mail_outbox, public.mfa_recovery_codes
+  public.mail_outbox, public.mfa_recovery_codes, public.tx_ledger
 TO app_runtime;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 -- Advisory locks are built-in functions; no extra grant is needed.
@@ -87,7 +88,7 @@ BEGIN
     'users','categories','creator_profiles','campaigns','prizes','campaign_participants',
     'tracking_links','clicks','ip_intel','campaign_daily_stats','payouts','notifications',
     'admin_actions','settings','challenges','sessions','rate_limits','auth_tokens',
-    'mail_outbox','mfa_recovery_codes'
+    'mail_outbox','mfa_recovery_codes','tx_ledger'
   ] LOOP
     EXECUTE format('DROP POLICY IF EXISTS app_runtime_all ON public.%I', t);
     EXECUTE format('CREATE POLICY app_runtime_all ON public.%I FOR ALL TO app_runtime USING (true) WITH CHECK (true)', t);

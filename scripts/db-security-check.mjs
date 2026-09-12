@@ -19,7 +19,7 @@ const TABLES = [
   "users", "categories", "creator_profiles", "campaigns", "prizes", "campaign_participants",
   "tracking_links", "clicks", "ip_intel", "campaign_daily_stats", "payouts", "notifications",
   "admin_actions", "settings", "challenges", "sessions", "rate_limits", "auth_tokens",
-  "mail_outbox", "mfa_recovery_codes",
+  "mail_outbox", "mfa_recovery_codes", "tx_ledger",
 ];
 const SENSITIVE = ["users", "sessions", "auth_tokens", "mfa_recovery_codes", "clicks", "mail_outbox"];
 

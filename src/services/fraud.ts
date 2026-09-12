@@ -64,6 +64,13 @@ export interface ClickContext {
   /** navigator.webdriver reported true by the JS challenge (Selenium/Puppeteer). */
   webdriver?: boolean;
   nowMs: number;
+  /**
+   * Re-evaluation of an already-stored click: its own row must not count
+   * against itself (rate/volume/dedup), so it is excluded from every query.
+   */
+  excludeClickId?: string;
+  /** Clock used for the IP-intel freshness check (defaults to nowMs). */
+  intelNowMs?: number;
 }
 
 export interface Verdict {
@@ -87,14 +94,14 @@ export async function classifyClick(ctx: ClickContext): Promise<Verdict> {
   if (ctx.webdriver) return { status: "rejected", reason: "automation" };
 
   const perMinuteLimit = await getSetting("rate_limit_per_minute");
-  const lastMinute = await countClicks(ctx.campaignId, "ip_hash", ctx.ipHash, ctx.nowMs - 60_000);
+  const lastMinute = await countClicks(ctx.campaignId, "ip_hash", ctx.ipHash, ctx.nowMs - 60_000, ctx.excludeClickId);
   if (lastMinute >= perMinuteLimit) return { status: "rejected", reason: "rate_limited" };
 
   const dedupWindowMs = (await getSetting("dedup_window_hours")) * 3_600_000;
   const since = ctx.nowMs - dedupWindowMs;
-  if (await hasQualified(ctx.campaignId, "session_id", ctx.sessionId, since))
+  if (await hasQualified(ctx.campaignId, "session_id", ctx.sessionId, since, ctx.excludeClickId))
     return { status: "rejected", reason: "duplicate_session" };
-  if (await hasQualified(ctx.campaignId, "device_hash", ctx.deviceHash, since))
+  if (await hasQualified(ctx.campaignId, "device_hash", ctx.deviceHash, since, ctx.excludeClickId))
     return { status: "rejected", reason: "duplicate_device" };
 
   // Network intelligence (cached during the interstitial): VPN / proxy / Tor
@@ -104,7 +111,7 @@ export async function classifyClick(ctx: ClickContext): Promise<Verdict> {
       "SELECT risky, checked_at FROM ip_intel WHERE ip_hash = ?",
       ctx.ipHash
     );
-    const fresh = !!intel && ctx.nowMs - Number(intel.checked_at) < IP_INTEL_MAX_AGE_MS;
+    const fresh = !!intel && (ctx.intelNowMs ?? ctx.nowMs) - Number(intel.checked_at) < IP_INTEL_MAX_AGE_MS;
     if (!fresh) {
       // No (fresh) verdict yet: never finalize the score on a missing signal.
       // The click waits and is auto-qualified once a clean verdict arrives.
@@ -119,12 +126,13 @@ export async function classifyClick(ctx: ClickContext): Promise<Verdict> {
   const devicesOnIp = await countQualifiedDevicesOnIp(
     ctx.campaignId,
     ctx.ipHash,
-    ctx.nowMs - 86_400_000
+    ctx.nowMs - 86_400_000,
+    ctx.excludeClickId
   );
   if (devicesOnIp >= deviceCap) return { status: "pending_review", reason: "ip_device_cap" };
 
   const reviewThreshold = await getSetting("review_threshold_24h");
-  const last24h = await countClicks(ctx.campaignId, "ip_hash", ctx.ipHash, ctx.nowMs - 86_400_000);
+  const last24h = await countClicks(ctx.campaignId, "ip_hash", ctx.ipHash, ctx.nowMs - 86_400_000, ctx.excludeClickId);
   if (last24h >= reviewThreshold) return { status: "pending_review", reason: "high_volume_ip" };
 
   if (!ctx.hasSecFetch) return { status: "pending_review", reason: "missing_sec_fetch" };
@@ -132,17 +140,24 @@ export async function classifyClick(ctx: ClickContext): Promise<Verdict> {
   return { status: "qualified", reason: null };
 }
 
+function excludeClause(excludeId?: string): { sql: string; params: string[] } {
+  return excludeId ? { sql: " AND id <> ?", params: [excludeId] } : { sql: "", params: [] };
+}
+
 async function countClicks(
   campaignId: string,
   column: "ip_hash" | "session_id",
   value: string,
-  sinceMs: number
+  sinceMs: number,
+  excludeId?: string
 ): Promise<number> {
+  const ex = excludeClause(excludeId);
   const row = await one<{ c: number }>(
-    `SELECT COUNT(*) AS c FROM clicks WHERE campaign_id = ? AND ${column} = ? AND created_at >= ?`,
+    `SELECT COUNT(*) AS c FROM clicks WHERE campaign_id = ? AND ${column} = ? AND created_at >= ?${ex.sql}`,
     campaignId,
     value,
-    sinceMs
+    sinceMs,
+    ...ex.params
   );
   return row?.c ?? 0;
 }
@@ -151,28 +166,34 @@ async function hasQualified(
   campaignId: string,
   column: "ip_hash" | "session_id" | "device_hash",
   value: string,
-  sinceMs: number
+  sinceMs: number,
+  excludeId?: string
 ): Promise<boolean> {
+  const ex = excludeClause(excludeId);
   return !!(await one(
     `SELECT 1 FROM clicks
-     WHERE campaign_id = ? AND ${column} = ? AND status = 'qualified' AND created_at >= ? LIMIT 1`,
+     WHERE campaign_id = ? AND ${column} = ? AND status = 'qualified' AND created_at >= ?${ex.sql} LIMIT 1`,
     campaignId,
     value,
-    sinceMs
+    sinceMs,
+    ...ex.params
   ));
 }
 
 async function countQualifiedDevicesOnIp(
   campaignId: string,
   ipHash: string,
-  sinceMs: number
+  sinceMs: number,
+  excludeId?: string
 ): Promise<number> {
+  const ex = excludeClause(excludeId);
   const row = await one<{ c: number }>(
     `SELECT COUNT(DISTINCT device_hash) AS c FROM clicks
-     WHERE campaign_id = ? AND ip_hash = ? AND status = 'qualified' AND created_at >= ?`,
+     WHERE campaign_id = ? AND ip_hash = ? AND status = 'qualified' AND created_at >= ?${ex.sql}`,
     campaignId,
     ipHash,
-    sinceMs
+    sinceMs,
+    ...ex.params
   );
   return row?.c ?? 0;
 }

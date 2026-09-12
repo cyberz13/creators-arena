@@ -1,9 +1,10 @@
-import { execute, id, now, one, q, run, tx, txSerializeOn } from "@/lib/db";
+import { execute, id, now, one, purgeTxLedger, q, run, tx, txSerializeOn } from "@/lib/db";
 import type { Campaign, Participant, Prize, TrackingLink, User } from "@/lib/types";
 import { notify } from "./notifications";
 import { logAdminAction } from "./adminActions";
 import { campaignLockKey, recomputeStandings, SYSTEM_ACTOR_ID, ensureSystemActor } from "./results";
 import { DomainError } from "./errors";
+import { emailVerificationRequired } from "./auth";
 export { DomainError } from "./errors";
 
 export interface CampaignInput {
@@ -233,18 +234,21 @@ export async function sweepLifecycles(force = false) {
   // stale challenges/sessions/rate-limit rows, and re-evaluation of clicks
   // that were waiting for a network verdict.
   try {
-    const [{ purgeStaleChallenges }, { purgeSessions }, { purgeRateLimits }, { purgeStaleIpIntel }, { reevaluateIpUnverified }] =
+    const [{ purgeStaleChallenges }, { purgeSessions }, { purgeRateLimits }, { purgeStaleIpIntel }, { reevaluateIpUnverified }, { purgeMailBodies }] =
       await Promise.all([
         import("./challenges"),
         import("./sessions"),
         import("./rate-limit"),
         import("./ip-intel"),
         import("./tracking"),
+        import("@/lib/mailer"),
       ]);
     await purgeStaleChallenges();
     await purgeSessions();
     await purgeRateLimits();
     await purgeStaleIpIntel();
+    await purgeTxLedger();
+    await purgeMailBodies();
     await reevaluateIpUnverified();
   } catch (e) {
     console.error("sweep housekeeping failed", e);
@@ -380,6 +384,8 @@ export async function joinCampaign(campaignId: string, userId: string): Promise<
     throw new DomainError("حسابك بانتظار اعتماد الإدارة — ستتمكن من المشاركة بعد الاعتماد");
   if (user.participation_status !== "active")
     throw new DomainError("المشاركة في التحديات موقوفة لهذا الحساب — تواصل مع الإدارة");
+  if (emailVerificationRequired() && Number(user.email_verified) !== 1)
+    throw new DomainError("أكّد بريدك الإلكتروني أولًا للمشاركة في التحديات");
   const existing = await one<Participant>(
     "SELECT * FROM campaign_participants WHERE campaign_id = ? AND user_id = ?",
     campaignId,

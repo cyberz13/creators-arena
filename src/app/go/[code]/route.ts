@@ -1,136 +1,201 @@
-import { NextRequest, NextResponse } from "next/server";
-import { after } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
+import { createHash } from "node:crypto";
+import { one } from "@/lib/db";
+import { isProduction } from "@/lib/env";
+import { clientIp } from "@/lib/client-ip";
+import { allowRequest } from "@/lib/request-limit";
 import { recordClick } from "@/services/tracking";
 import { computeDeviceHash, hashIp, isBotUserAgent } from "@/services/fraud";
-import { ensureIpIntel, getIpIntel } from "@/services/ip-intel";
-import { issueChallengeToken, verifyChallengeToken } from "@/lib/challenge";
+import { ensureIpIntel, hasFreshIpIntel } from "@/services/ip-intel";
+import { consumeChallenge, issueChallenge } from "@/services/challenges";
+import { getSetting } from "@/services/settings";
 
 export const dynamic = "force-dynamic";
 
-const VISITOR_COOKIE = "tahaddi_vid";
-
 /**
- * Two-step tracking flow (Phase-1 hardening):
- *  1. First hit renders a ~300ms interstitial that must EXECUTE JavaScript to
- *     obtain a signed, IP-bound, short-lived token (plus a client device probe).
- *  2. The return trip with a valid token runs the fraud pipeline and redirects.
- * HTTP-only bots never complete step 2, so they never enter the stats at all —
- * except obvious bot UAs, which we still record as rejected for admin visibility.
+ * Tracking redirect, hardened:
+ *  1. cheap per-IP request limiter before any DB/external work;
+ *  2. strict code syntax check, then the link must exist (no challenge, no
+ *     IP-intelligence lookup, no writes for unknown codes);
+ *  3. the challenge page never interpolates request data into JavaScript —
+ *     a static script (/go-challenge.js) reads an escaped JSON block;
+ *  4. one-time, signed, IP+code bound challenge tokens consumed atomically;
+ *  5. failed step-2 verification still redirects to the store (visitor is
+ *     never trapped) but nothing is counted.
  */
+
+const VISITOR_COOKIE = "tahaddi_vid";
+const CODE_RE = /^[A-Za-z0-9]{6,16}$/;
+const LIMITS = { userAgent: 512, referer: 1024, utm: 64, probe: 200 } as const;
+
+const CHALLENGE_STYLE = `body{margin:0;min-height:100vh;display:grid;place-items:center;background:#161826;color:#e9e9ed;font-family:Tajawal,system-ui,sans-serif}.box{display:flex;flex-direction:column;align-items:center;gap:18px}.mark{font-weight:700;letter-spacing:.08em;font-size:18px}.mark b{color:#9184d9;font-weight:700}.bar{width:150px;height:4px;border-radius:99px;background:#3f424d;overflow:hidden}.bar i{display:block;height:100%;width:35%;border-radius:99px;background:#9184d9;animation:s 1s ease-in-out infinite}@keyframes s{0%{transform:translateX(200%)}100%{transform:translateX(-320%)}}p{margin:0;font-size:13px;color:#9397ab}`;
+const STYLE_HASH = createHash("sha256").update(CHALLENGE_STYLE).digest("base64");
+const CHALLENGE_CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  `style-src 'sha256-${STYLE_HASH}'`,
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+const BASE_HEADERS: Record<string, string> = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+};
+
+function clamp(value: string | null, max: number): string | null {
+  if (value === null) return null;
+  return value.length > max ? value.slice(0, max) : value;
+}
+
+/** JSON safe for embedding in <script type="application/json"> (no </script>, no HTML, no line separators). */
+function jsonForHtml(value: unknown): string {
+  // Built without escape sequences on purpose (editor/tooling-safe).
+  const BS = String.fromCharCode(92);
+  const esc = (hex: string) => BS + "u" + hex;
+  return JSON.stringify(value)
+    .split("<").join(esc("003c"))
+    .split(">").join(esc("003e"))
+    .split("&").join(esc("0026"))
+    .split(String.fromCharCode(0x2028)).join(esc("2028"))
+    .split(String.fromCharCode(0x2029)).join(esc("2029"));
+}
+
+function plain(status: number, text: string): NextResponse {
+  return new NextResponse(text, { status, headers: { ...BASE_HEADERS, "content-type": "text/plain; charset=utf-8" } });
+}
+
+function redirectTo(url: string): NextResponse {
+  const res = NextResponse.redirect(url, 302);
+  for (const [k, v] of Object.entries(BASE_HEADERS)) res.headers.set(k, v);
+  return res;
+}
+
+function setVisitorCookie(res: NextResponse, id: string) {
+  res.cookies.set(VISITOR_COOKIE, id, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isProduction(),
+    maxAge: 365 * 24 * 60 * 60,
+    path: "/go",
+  });
+}
+
+interface LinkRow {
+  campaign_id: string;
+  status: string;
+  store_url: string;
+}
+
 export async function GET(req: NextRequest, ctx: { params: Promise<{ code: string }> }) {
+  const ip = clientIp(req.headers);
+  if (!allowRequest(`go:${ip}`, 120, 60_000)) return plain(429, "Too many requests");
+
   const { code } = await ctx.params;
+  if (!CODE_RE.test(code)) return plain(404, "Not found");
 
-  const forwarded = req.headers.get("x-forwarded-for");
-  const ip = forwarded?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "0.0.0.0";
+  const link = await one<LinkRow>(
+    `SELECT t.campaign_id, c.status, c.store_url
+     FROM tracking_links t JOIN campaigns c ON c.id = t.campaign_id
+     WHERE t.code = ?`,
+    code
+  );
+  if (!link) return plain(404, "Not found");
+
   const ipHash = hashIp(ip);
-  const userAgent = req.headers.get("user-agent") ?? "";
+  const userAgent = clamp(req.headers.get("user-agent"), LIMITS.userAgent) ?? "";
+  const url = req.nextUrl;
+  const utmSource = clamp(url.searchParams.get("utm_source"), LIMITS.utm);
 
-  let sessionId = req.cookies.get(VISITOR_COOKIE)?.value;
-  const isNewVisitor = !sessionId;
-  if (!sessionId || !/^[a-f0-9-]{36}$/.test(sessionId)) sessionId = crypto.randomUUID();
-
-  const url = new URL(req.url);
-  const token = url.searchParams.get("t");
+  let visitorId = req.cookies.get(VISITOR_COOKIE)?.value ?? null;
+  if (visitorId && !/^[a-f0-9-]{36}$/.test(visitorId)) visitorId = null;
+  const isNewVisitor = visitorId === null;
+  const sessionId = visitorId ?? crypto.randomUUID();
 
   const deviceHash = computeDeviceHash({
     userAgent,
-    acceptLanguage: req.headers.get("accept-language"),
-    chUa: req.headers.get("sec-ch-ua"),
-    chPlatform: req.headers.get("sec-ch-ua-platform"),
-    clientProbe: url.searchParams.get("fp"),
+    acceptLanguage: clamp(req.headers.get("accept-language"), 128),
+    chUa: clamp(req.headers.get("sec-ch-ua"), 256),
+    chPlatform: clamp(req.headers.get("sec-ch-ua-platform"), 64),
+    clientProbe: clamp(url.searchParams.get("fp"), LIMITS.probe),
   });
   const hasSecFetch = req.headers.has("sec-fetch-mode") || req.headers.has("sec-fetch-site");
-
-  // Coarse geo: Vercel edge headers in production, cached IP intel elsewhere.
   const vercelCity = req.headers.get("x-vercel-ip-city");
-  let geoCountry = req.headers.get("x-vercel-ip-country");
-  let geoCity = vercelCity ? decodeURIComponent(vercelCity) : null;
+  const geoCountry = clamp(req.headers.get("x-vercel-ip-country"), 8);
+  const geoCity = vercelCity ? clamp(decodeURIComponent(vercelCity), 80) : null;
 
-  // Obvious bots: record (visible to the admin) and bounce straight away.
-  if (isBotUserAgent(userAgent)) {
+  // Obvious bots and inactive campaigns: record for the admin, bounce straight away.
+  if (isBotUserAgent(userAgent) || link.status !== "active") {
     const result = await recordClick({
       code,
       ipHash,
       sessionId,
       deviceHash,
       userAgent,
-      referer: req.headers.get("referer"),
-      utmSource: url.searchParams.get("utm_source"),
+      referer: clamp(req.headers.get("referer"), LIMITS.referer),
+      utmSource,
       hasSecFetch,
       geoCountry,
       geoCity,
     });
-    return NextResponse.redirect(result.redirectUrl ?? new URL("/?e=link", req.url), 302);
+    return redirectTo(result.redirectUrl ?? link.store_url);
   }
 
-  // Step 2: valid signed token → count the click and redirect to the store.
-  if (token && verifyChallengeToken(token, code, ipHash)) {
-    if (!geoCity || !geoCountry) {
-      const intel = await getIpIntel(ipHash);
-      geoCountry = geoCountry ?? intel?.country ?? null;
-      geoCity = geoCity ?? intel?.city ?? null;
+  const token = url.searchParams.get("t");
+  if (token !== null) {
+    const verdict = await consumeChallenge(token, code, ipHash, visitorId);
+    if (verdict !== "ok") {
+      // Never trap the visitor; simply don't count.
+      return redirectTo(link.store_url);
     }
-    const webdriver = url.searchParams.get("wd") === "1";
+    // Make sure the network verdict is in place before classifying (bounded wait).
+    if ((await getSetting("ip_intel_enabled")) && !(await hasFreshIpIntel(ipHash))) {
+      await Promise.race([ensureIpIntel(ip, ipHash).catch(() => {}), new Promise((r) => setTimeout(r, 1_200))]);
+    }
     const elapsed = Number(url.searchParams.get("el"));
     const interactions = Number(url.searchParams.get("ix"));
-    const signals = JSON.stringify({
-      el: Number.isFinite(elapsed) ? elapsed : null,
-      ix: Number.isFinite(interactions) ? interactions : null,
-      wd: webdriver ? 1 : 0,
-    });
+    const webdriver = url.searchParams.get("wd") === "1";
     const result = await recordClick({
       code,
       ipHash,
       sessionId,
       deviceHash,
       userAgent,
-      referer: url.searchParams.get("r") || req.headers.get("referer"),
-      utmSource: url.searchParams.get("utm_source"),
+      referer: clamp(url.searchParams.get("r"), LIMITS.referer) || clamp(req.headers.get("referer"), LIMITS.referer),
+      utmSource,
       hasSecFetch,
       webdriver,
       geoCountry,
       geoCity,
-      signals,
+      signals: JSON.stringify({
+        el: Number.isFinite(elapsed) ? Math.min(elapsed, 600_000) : null,
+        ix: Number.isFinite(interactions) ? Math.min(interactions, 10_000) : null,
+        wd: webdriver ? 1 : 0,
+        cookie: visitorId ? 1 : 0,
+      }),
     });
-    if (!result.redirectUrl) {
-      return NextResponse.redirect(new URL("/?e=link", req.url), 302);
-    }
-    const res = NextResponse.redirect(result.redirectUrl, 302);
-    if (isNewVisitor) {
-      res.cookies.set(VISITOR_COOKIE, sessionId, {
-        httpOnly: true,
-        sameSite: "lax",
-        maxAge: 365 * 24 * 60 * 60,
-        path: "/",
-      });
-    }
+    const res = redirectTo(result.redirectUrl ?? link.store_url);
+    if (isNewVisitor) setVisitorCookie(res, sessionId);
     return res;
   }
 
-  // Step 1: interstitial JS challenge. Nothing is recorded here.
-  // Warm the network-intel cache while the client does its round-trip, so the
-  // counted request never pays the external-lookup latency.
-  after(() => ensureIpIntel(ip, ipHash).catch(() => {}));
-  const fresh = issueChallengeToken(code, ipHash);
-  const utm = url.searchParams.get("utm_source");
-  const passThrough = utm ? `&utm_source=${encodeURIComponent(utm)}` : "";
+  // Step 1: challenge page. Nothing is counted here.
+  if (await getSetting("ip_intel_enabled")) {
+    after(() => ensureIpIntel(ip, ipHash).catch(() => {}));
+  }
+  const challenge = await issueChallenge(code, ipHash, sessionId);
+  const config = jsonForHtml({ code, t: challenge, utm: utmSource ?? "" });
   const html = `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
 <title>CREATORS ARENA</title>
-<style>
-  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#161826;color:#e9e9ed;font-family:Tajawal,system-ui,sans-serif}
-  .box{display:flex;flex-direction:column;align-items:center;gap:18px}
-  .mark{font-weight:700;letter-spacing:.08em;font-size:18px}
-  .mark b{color:#9184d9;font-weight:700}
-  .bar{width:150px;height:4px;border-radius:99px;background:#3f424d;overflow:hidden}
-  .bar i{display:block;height:100%;width:35%;border-radius:99px;background:#9184d9;animation:s 1s ease-in-out infinite}
-  @keyframes s{0%{transform:translateX(200%)}100%{transform:translateX(-320%)}}
-  p{margin:0;font-size:13px;color:#9397ab}
-</style>
+<style>${CHALLENGE_STYLE}</style>
 </head>
 <body>
 <div class="box">
@@ -139,40 +204,18 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ code: strin
   <p>جارٍ التحقق من الزيارة…</p>
   <noscript><p style="color:#f87171">فعّل JavaScript في متصفحك لإكمال الزيارة</p></noscript>
 </div>
-<script>
-(function(){
-  var t0 = performance.now();
-  var ix = 0;
-  ["pointermove","touchstart","scroll","keydown"].forEach(function(ev){
-    addEventListener(ev, function(){ ix++; }, {passive:true});
-  });
-  var fp = [screen.width, screen.height, screen.colorDepth,
-            Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-            navigator.hardwareConcurrency || 0,
-            window.devicePixelRatio || 1].join("x");
-  var wd = navigator.webdriver ? "&wd=1" : "";
-  var r = document.referrer ? "&r=" + encodeURIComponent(document.referrer) : "";
-  // A ~300ms window: lets the loader breathe and captures touch/pointer
-  // liveness that scripted clients never produce.
-  setTimeout(function(){
-    var extra = "&el=" + Math.round(performance.now() - t0) + "&ix=" + ix;
-    location.replace("/go/${code}?t=${encodeURIComponent(fresh)}&fp=" + encodeURIComponent(fp) + wd + extra + r + "${passThrough}");
-  }, 300);
-})();
-</script>
+<script type="application/json" id="ca-config">${config}</script>
+<script src="/go-challenge.js"></script>
 </body>
 </html>`;
   const res = new NextResponse(html, {
     status: 200,
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    headers: {
+      ...BASE_HEADERS,
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": CHALLENGE_CSP,
+    },
   });
-  if (isNewVisitor) {
-    res.cookies.set(VISITOR_COOKIE, sessionId, {
-      httpOnly: true,
-      sameSite: "lax",
-      maxAge: 365 * 24 * 60 * 60,
-      path: "/",
-    });
-  }
+  if (isNewVisitor) setVisitorCookie(res, sessionId);
   return res;
 }

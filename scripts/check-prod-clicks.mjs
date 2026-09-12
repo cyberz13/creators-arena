@@ -1,5 +1,7 @@
 import postgres from "postgres";
-const sql = postgres(process.env.PGURL, { ssl: "require", max: 1, prepare: false });
+import { requireProdAccess } from "./lib/prod-guard.mjs";
+const __dbUrl = requireProdAccess({ write: false });
+const sql = postgres(__dbUrl, { ssl: "require", max: 1, prepare: false });
 const since = Date.now() - 20 * 60_000;
 const rows = await sql.unsafe(
   `SELECT status, reject_reason, user_agent, created_at FROM clicks WHERE created_at > ${since} ORDER BY created_at DESC LIMIT 10`

@@ -25,6 +25,8 @@ export type Param = string | number | null;
 interface Driver {
   all(sql: string, params: Param[]): Promise<Row[]>;
   run(sql: string, params: Param[]): Promise<void>;
+  /** Like run, but returns the number of affected rows (conditional updates). */
+  execute(sql: string, params: Param[]): Promise<number>;
   begin<T>(fn: () => Promise<T>): Promise<T>;
 }
 
@@ -39,6 +41,9 @@ function sqliteDriver(db: DatabaseSync): Driver {
     },
     async run(sql, params) {
       db.prepare(sql).run(...params);
+    },
+    async execute(sql, params) {
+      return Number(db.prepare(sql).run(...params).changes);
     },
     async begin(fn) {
       db.exec("BEGIN");
@@ -168,6 +173,12 @@ function openPostgres(url: string): Driver {
     async run(text, params) {
       await withRetry((s) => s.unsafe(toDollarParams(text), params as never[]) as unknown as Promise<unknown>);
     },
+    async execute(text, params) {
+      const res = (await withRetry(
+        (s) => s.unsafe(toDollarParams(text), params as never[]) as unknown as Promise<{ count: number }>
+      )) as { count: number };
+      return Number(res.count ?? 0);
+    },
     async begin(fn) {
       // Transactions go through the same queue — a tx pins the sole connection,
       // so a concurrent standalone query would otherwise interleave (pipeline).
@@ -230,6 +241,11 @@ export async function one<T = Row>(sql: string, ...params: Param[]): Promise<T |
 
 export async function run(sql: string, ...params: Param[]): Promise<void> {
   await getDriver().run(sql, params);
+}
+
+/** Run a statement and return affected rows — the primitive for conditional, idempotent writes. */
+export async function execute(sql: string, ...params: Param[]): Promise<number> {
+  return getDriver().execute(sql, params);
 }
 
 export async function tx<T>(fn: () => Promise<T>): Promise<T> {

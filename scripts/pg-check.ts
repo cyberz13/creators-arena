@@ -1,5 +1,9 @@
 /** Quick functional probe of the resilient Postgres driver against DATABASE_URL. */
 import { q, one, tx, run } from "../src/lib/db";
+// Live-database guard (see scripts/lib/prod-guard.mjs): explicit acknowledgement required.
+if (!process.env.DATABASE_URL) { console.error("refusing to run: set DATABASE_URL in the shell for the target database"); process.exit(2); }
+if (process.env.CONFIRM_PROD_ACCESS !== "I_UNDERSTAND") { console.error("refusing to run: this script talks to a live database. Set CONFIRM_PROD_ACCESS=I_UNDERSTAND to proceed."); process.exit(2); }
+
 
 async function main() {
   const t0 = Date.now();

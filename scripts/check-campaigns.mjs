@@ -1,6 +1,8 @@
 // Diagnostic: recent campaigns + campaigns table columns (PGURL env).
 import postgres from "postgres";
-const sql = postgres(process.env.PGURL, { ssl: "require", max: 1, prepare: false });
+import { requireProdAccess } from "./lib/prod-guard.mjs";
+const __dbUrl = requireProdAccess({ write: false });
+const sql = postgres(__dbUrl, { ssl: "require", max: 1, prepare: false });
 const cols = await sql.unsafe(
   "SELECT column_name FROM information_schema.columns WHERE table_name = 'campaigns' ORDER BY ordinal_position"
 );

@@ -1,6 +1,8 @@
 // Diagnostic: time each admin-overview query against Supabase (PGURL env).
 import postgres from "postgres";
-const sql = postgres(process.env.PGURL, {
+import { requireProdAccess } from "./lib/prod-guard.mjs";
+const __dbUrl = requireProdAccess({ write: false });
+const sql = postgres(__dbUrl, {
   ssl: "require",
   max: Number(process.env.MAXC ?? 1),
   prepare: false,

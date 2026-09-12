@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ipHashSalt } from "@/lib/env";
 import { one } from "@/lib/db";
 import { getSetting } from "./settings";
 import type { ClickStatus, TrafficSource } from "@/lib/types";
@@ -13,7 +14,7 @@ export function isBotUserAgent(ua: string): boolean {
 
 /** Never store raw IPs — a salted SHA-256 hash is enough for dedup/rate limiting. */
 export function hashIp(ip: string): string {
-  const salt = process.env.IP_HASH_SALT ?? "tahaddi-dev-salt";
+  const salt = ipHashSalt();
   return createHash("sha256").update(`${salt}:${ip}`).digest("hex").slice(0, 32);
 }
 
@@ -29,7 +30,7 @@ export function computeDeviceHash(signals: {
   chPlatform: string | null;
   clientProbe: string | null;
 }): string {
-  const salt = process.env.IP_HASH_SALT ?? "tahaddi-dev-salt";
+  const salt = ipHashSalt();
   const material = [
     signals.userAgent,
     signals.acceptLanguage ?? "",

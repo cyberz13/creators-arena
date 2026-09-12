@@ -1,5 +1,7 @@
 /** Did any REJECTED click leak into a qualified counter? Direct evidence check. */
 import postgres from "postgres";
+import { requireProdAccess } from "./lib/prod-guard.mjs";
+const __dbUrl = requireProdAccess({ write: false });
 
 const sql = postgres(process.env.DATABASE_URL, { ssl: "require", max: 1, prepare: false });
 const u = (q, p = []) => sql.unsafe(q, p);

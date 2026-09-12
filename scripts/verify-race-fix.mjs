@@ -1,5 +1,7 @@
 /** Post-fix verdict: how were the last 10 minutes of clicks classified per IP? */
 import postgres from "postgres";
+import { requireProdAccess } from "./lib/prod-guard.mjs";
+const __dbUrl = requireProdAccess({ write: false });
 
 const sql = postgres(process.env.DATABASE_URL, { ssl: "require", max: 1, prepare: false });
 const since = Date.now() - 10 * 60 * 1000;

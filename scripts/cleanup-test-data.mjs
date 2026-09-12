@@ -1,5 +1,7 @@
 /** One-time: removes smoke-test data from the production Supabase DB. */
 import postgres from "postgres";
+import { requireProdAccess } from "./lib/prod-guard.mjs";
+const __dbUrl = requireProdAccess({ write: true });
 
 const sql = postgres(process.env.DATABASE_URL, { ssl: "require", max: 1, prepare: false });
 await sql.unsafe("DELETE FROM campaigns WHERE title LIKE '%الافتتاح%'");

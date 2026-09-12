@@ -1,4 +1,6 @@
-// Audit-only reproductions: PASS means the reported unsafe behavior exists.
+// Audit reproductions from the external review (2026-09-12).
+// Originally PASS meant "the defect exists"; each case is flipped to assert the
+// SAFE behaviour as its fix lands, so the suite keeps the original coverage.
 // All data is synthetic, SQLite is in memory, and external callbacks are disabled.
 import { beforeEach, expect, it, vi } from 'vitest';
 import { runInNewContext } from 'node:vm';
@@ -19,43 +21,51 @@ vi.mock('next/server', async (load) => ({ ...(await load<object>()), after: () =
 beforeEach(() => { freshDb(); cookieState.token = ''; });
 const hit = (code: string, t = Date.now(), extra = {}) => recordClick({code, ...visitor(), referer: null, utmSource: null, nowMs: t, ...extra});
 
-it('A01: reflected code executes harmless JavaScript in the generated challenge', async () => {
+it('A01 (fixed): a reflected code is rejected before any HTML is generated, and the challenge page has no inline script', async () => {
   const code = 'x");globalThis.__auditXss=1;//';
   const res = await GET(new NextRequest('http://localhost/go/' + encodeURIComponent(code), {
     headers: { 'user-agent': visitor().userAgent, 'x-forwarded-for': '127.0.0.1' }
   }), { params: Promise.resolve({ code }) });
   const html = await res.text();
-  const script = html.match(/<script>([\s\S]*?)<\/script>/)![1];
-  const ctx: Record<string, unknown> = {
-    performance: { now: () => 0 }, addEventListener: () => {},
-    screen: { width: 1, height: 1, colorDepth: 24 }, navigator: {},
-    window: {}, document: {}, location: { replace: () => {} },
-    setTimeout: (fn: () => void) => fn(),
-  };
-  runInNewContext(script, ctx, { timeout: 1000 });
-  expect(res.status).toBe(200);
-  expect(ctx.__auditXss).toBe(1);
+  expect(res.status).toBe(404);
+  expect(html).not.toContain('__auditXss');
+  expect(html).not.toContain('<script');
+  const c = await makeCampaign(); const u = await makeCreator(); const link = await joinCampaign(c.id, u);
+  const ok = await GET(new NextRequest('http://localhost/go/' + link.code, {
+    headers: { 'user-agent': visitor().userAgent, 'x-forwarded-for': '127.0.0.1' }
+  }), { params: Promise.resolve({ code: link.code }) });
+  const page = await ok.text();
+  expect(page.match(/<script>([\s\S]*?)<\/script>/)).toBeNull();
+  const ctx: Record<string, unknown> = { performance: { now: () => 0 }, addEventListener: () => {}, screen: {}, navigator: {}, window: {}, document: {}, location: { replace: () => {} }, setTimeout: (fn: () => void) => fn() };
+  for (const m of page.matchAll(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/g)) {
+    runInNewContext('(' + m[1] + ')', ctx, { timeout: 1000 }); // pure data, never code
+  }
+  expect(ctx.__auditXss).toBeUndefined();
 });
 
-it('A02: missing SESSION_SECRET accepts a forged admin session', async () => {
+it('A02 (fixed): a forged session signed with the old known default is rejected; production refuses to run without a secret', async () => {
   vi.stubEnv('SESSION_SECRET', undefined);
   const target = await adminId();
   cookieState.token = await new SignJWT({ sub: target }).setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime('1m').sign(new TextEncoder().encode('dev-secret-change-in-production'));
-  expect((await getSessionUser())?.role).toBe('admin');
+  expect(await getSessionUser()).toBeNull();
+  vi.stubEnv('NODE_ENV', 'production');
+  expect(await getSessionUser()).toBeNull(); // a ConfigError is never a bypass
   vi.unstubAllEnvs();
 });
 
-it('A03: the same challenge token qualifies twice without executing browser JS', async () => {
+it('A03 (fixed): the same challenge token counts at most once, whatever identities are presented', async () => {
   const c = await makeCampaign(); const u = await makeCreator(); const link = await joinCampaign(c.id, u);
   const headers = { 'user-agent': visitor().userAgent, 'x-forwarded-for': '127.0.0.1', 'sec-fetch-mode': 'navigate' };
   const initial = await GET(new NextRequest('http://localhost/go/' + link.code, {headers}), {params: Promise.resolve({code: link.code})});
-  const token = (await initial.text()).match(/\?t=([^&]+)/)![1];
+  const html = await initial.text();
+  const token = (JSON.parse(html.match(/id="ca-config">([\s\S]*?)<\/script>/)![1]) as { t: string }).t;
+  const cookie = /tahaddi_vid=([a-f0-9-]{36})/.exec(initial.headers.get('set-cookie') ?? '')![1];
   for (const fp of ['device-a', 'device-b']) {
-    const counted = await GET(new NextRequest(`http://localhost/go/${link.code}?t=${token}&fp=${fp}&wd=0`, {headers}), {params: Promise.resolve({code: link.code})});
+    const counted = await GET(new NextRequest(`http://localhost/go/${link.code}?t=${encodeURIComponent(token)}&fp=${fp}&wd=0`, {headers: {...headers, cookie: 'tahaddi_vid=' + cookie}}), {params: Promise.resolve({code: link.code})});
     expect(counted.status).toBe(302);
   }
-  expect((await getParticipant(c.id, u))!.qualified_count).toBe(2);
+  expect((await getParticipant(c.id, u))!.qualified_count).toBe(1);
 });
 
 it('A04: review after finalization changes the leader but leaves the prize assigned to the old winner', async () => {

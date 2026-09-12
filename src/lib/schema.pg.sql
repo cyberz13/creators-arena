@@ -189,3 +189,14 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- One-time JS-challenge nonces for /go/:code (consumed atomically; purged after an hour).
+CREATE TABLE IF NOT EXISTS challenges (
+  id          TEXT PRIMARY KEY,
+  code        TEXT NOT NULL,
+  ip_hash     TEXT NOT NULL,
+  visitor_id  TEXT NOT NULL DEFAULT '',
+  issued_at   BIGINT NOT NULL,
+  consumed_at BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_challenges_issued ON challenges(issued_at);

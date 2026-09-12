@@ -28,6 +28,12 @@ const RELAY_ASN_PATTERN = /cloudflare|akamai|fastly|apple/i;
 const PRIVATE_IP_PATTERN =
   /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.0\.0\.0|::1|fe80:|fc00:|fd)/i;
 
+/** True when a verdict exists and is younger than the cache TTL. */
+export async function hasFreshIpIntel(ipHash: string, nowMs = now()): Promise<boolean> {
+  const row = await getIpIntel(ipHash);
+  return !!row && nowMs - Number(row.checked_at) < CACHE_TTL_MS;
+}
+
 export async function getIpIntel(ipHash: string): Promise<IpIntelRow | null> {
   return (await one<IpIntelRow>("SELECT * FROM ip_intel WHERE ip_hash = ?", ipHash)) ?? null;
 }

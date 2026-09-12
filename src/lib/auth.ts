@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { SignJWT, jwtVerify } from "jose";
 import { one } from "./db";
+import { sessionSecret } from "./env";
 import type { CreatorProfile, User } from "./types";
 
 export { hashPassword, verifyPassword } from "./password";
@@ -10,7 +11,7 @@ const SESSION_COOKIE = "tahaddi_session";
 const SESSION_DAYS = 30;
 
 function secret() {
-  return new TextEncoder().encode(process.env.SESSION_SECRET ?? "dev-secret-change-in-production");
+  return new TextEncoder().encode(sessionSecret());
 }
 
 export async function createSession(userId: string) {

@@ -50,6 +50,9 @@ export function detectSource(referer: string | null, utmSource: string | null): 
   return "other";
 }
 
+/** A cached network verdict older than this is treated as unknown. */
+export const IP_INTEL_MAX_AGE_MS = 7 * 86_400_000;
+
 export interface ClickContext {
   campaignId: string;
   ipHash: string;
@@ -69,7 +72,11 @@ export interface Verdict {
 }
 
 /**
- * Fraud pipeline v2 (device-aware, CGNAT-fair):
+ * Fraud pipeline v3 (device-aware, CGNAT-fair, fail-closed on missing signals).
+ * None of the client-supplied inputs (fingerprint probe, navigator.webdriver,
+ * sec-fetch headers) is treated as proof that a visitor is human; they are
+ * risk signals that can only LOWER a click's standing (reject or hold for
+ * review), never raise it.
  *  - repeats are keyed on session AND device (incognito won't shed the device)
  *  - a shared IP no longer rejects by itself: distinct devices behind Saudi
  *    carrier NAT each count, up to a per-IP daily device cap → then review
@@ -93,11 +100,18 @@ export async function classifyClick(ctx: ClickContext): Promise<Verdict> {
   // Network intelligence (cached during the interstitial): VPN / proxy / Tor
   // / non-relay datacenter egress goes to review — the IP alone never rejects.
   if (await getSetting("ip_intel_enabled")) {
-    const risky = await one<{ risky: number }>(
-      "SELECT risky FROM ip_intel WHERE ip_hash = ?",
+    const intel = await one<{ risky: number; checked_at: number }>(
+      "SELECT risky, checked_at FROM ip_intel WHERE ip_hash = ?",
       ctx.ipHash
     );
-    if (risky?.risky) return { status: "pending_review", reason: "risky_ip" };
+    const fresh = !!intel && ctx.nowMs - Number(intel.checked_at) < IP_INTEL_MAX_AGE_MS;
+    if (!fresh) {
+      // No (fresh) verdict yet: never finalize the score on a missing signal.
+      // The click waits and is auto-qualified once a clean verdict arrives.
+      if (await getSetting("ip_unverified_action")) return { status: "pending_review", reason: "ip_unverified" };
+    } else if (Number(intel!.risky)) {
+      return { status: "pending_review", reason: "risky_ip" };
+    }
   }
 
   // CGNAT fairness: same IP is fine for distinct devices, up to a cap.

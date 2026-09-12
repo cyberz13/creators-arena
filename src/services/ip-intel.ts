@@ -45,9 +45,21 @@ export async function getIpIntel(ipHash: string): Promise<IpIntelRow | null> {
  * Failures are silent: no row is written, the next visit retries.
  */
 export async function ensureIpIntel(rawIp: string, ipHash: string): Promise<void> {
-  if (!rawIp || PRIVATE_IP_PATTERN.test(rawIp)) return;
+  if (!rawIp) return;
   const cached = await getIpIntel(ipHash);
   if (cached && now() - cached.checked_at < CACHE_TTL_MS) return;
+  if (PRIVATE_IP_PATTERN.test(rawIp)) {
+    // Private / loopback ranges cannot be VPN or datacenter egress: record a
+    // clean verdict so the pipeline never waits for a lookup that will not happen.
+    await run(
+      `INSERT INTO ip_intel (ip_hash, risky, flags, asn_org, country, city, checked_at)
+       VALUES (?, 0, 'private', NULL, NULL, NULL, ?)
+       ON CONFLICT(ip_hash) DO UPDATE SET risky = 0, flags = 'private', checked_at = excluded.checked_at`,
+      ipHash,
+      now()
+    );
+    return;
+  }
 
   let data: Record<string, unknown>;
   try {

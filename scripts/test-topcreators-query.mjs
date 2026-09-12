@@ -3,7 +3,7 @@ import postgres from "postgres";
 import { requireProdAccess } from "./lib/prod-guard.mjs";
 const __dbUrl = requireProdAccess({ write: false });
 
-const sql = postgres(process.env.DATABASE_URL, { ssl: "require", max: 1, prepare: false });
+const sql = postgres(__dbUrl, { ssl: "require", max: 1, prepare: false });
 const rows = await sql.unsafe(
   `SELECT p.user_id, cp.username, cp.name, cp.followers_count, cat.name_ar AS category_name,
      COALESCE(SUM(p.qualified_count),0) AS qualified_total,

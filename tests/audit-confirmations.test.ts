@@ -68,7 +68,7 @@ it('A03 (fixed): the same challenge token counts at most once, whatever identiti
   expect((await getParticipant(c.id, u))!.qualified_count).toBe(1);
 });
 
-it('A04: review after finalization changes the leader but leaves the prize assigned to the old winner', async () => {
+it('A04 (fixed): a review after finalization re-derives ranks AND the prize together while results are provisional', async () => {
   const c = await makeCampaign(); const a = await makeCreator('a_creator'); const b = await makeCreator('b_creator');
   const la = await joinCampaign(c.id, a); const lb = await joinCampaign(c.id, b);
   await hit(la.code); await hit(lb.code, Date.now(), {hasSecFetch: false}); await hit(lb.code, Date.now(), {hasSecFetch: false});
@@ -76,38 +76,38 @@ it('A04: review after finalization changes the leader but leaves the prize assig
   const pending = await q<{id:string}>("SELECT id FROM clicks WHERE status='pending_review'");
   for (const k of pending) await reviewClick(k.id, 'qualified', await adminId(), 'audit');
   expect((await getLeaderboard(c.id))[0].user_id).toBe(b);
-  expect((await one<{user_id:string}>('SELECT user_id FROM payouts WHERE campaign_id=?',c.id))!.user_id).toBe(a);
+  expect((await one<{user_id:string}>('SELECT user_id FROM payouts WHERE campaign_id=?',c.id))!.user_id).toBe(b);
 });
 
-it('A05: approving an old click replaces the latest timestamp and flips a tie incorrectly', async () => {
+it('A05 (fixed): approving an old click keeps the time the count was reached; the tie resolves in favour of b', async () => {
   const c = await makeCampaign(); const a = await makeCreator('a_creator'); const b = await makeCreator('b_creator');
   const la = await joinCampaign(c.id,a); const lb = await joinCampaign(c.id,b); const t=Date.now();
   await hit(la.code,t,{hasSecFetch:false}); await hit(lb.code,t+10); await hit(lb.code,t+20); await hit(la.code,t+30);
   const pending=(await one<{id:string}>("SELECT id FROM clicks WHERE status='pending_review'"))!;
   await reviewClick(pending.id,'qualified',await adminId(),'audit');
-  expect((await getParticipant(c.id,a))!.last_qualified_at).toBe(t);
-  expect((await getLeaderboard(c.id))[0].user_id).toBe(a); // should be b: b reached 2 at t+20, a at t+30
+  expect((await getParticipant(c.id,a))!.last_qualified_at).toBe(t+30);
+  expect((await getLeaderboard(c.id))[0].user_id).toBe(b); // b reached 2 at t+20, a at t+30
 });
 
-it('A06: rejecting the latest click does not restore the previous qualifying time', async () => {
+it('A06 (fixed): rejecting the latest click restores the previous qualifying time', async () => {
   const c = await makeCampaign(); const a = await makeCreator(); const l = await joinCampaign(c.id,a); const t=Date.now();
   await hit(l.code,t); await hit(l.code,t+100);
   const k=(await one<{id:string}>('SELECT id FROM clicks ORDER BY created_at DESC LIMIT 1'))!;
   await reviewClick(k.id,'rejected',await adminId(),'audit');
-  expect((await getParticipant(c.id,a))!.last_qualified_at).toBe(t+100); // should be t
+  expect((await getParticipant(c.id,a))!.last_qualified_at).toBe(t);
 });
 
-it('A07: finalization leaves participant 101 without a final rank', async () => {
+it('A07 (fixed): finalization ranks every participant, not just the first 100', async () => {
   const c=await makeCampaign();
   for(let i=0;i<101;i++) await joinCampaign(c.id,await makeCreator());
   await finalizeCampaign(c.id);
-  expect((await one<{n:number}>('SELECT COUNT(*) AS n FROM campaign_participants WHERE final_rank IS NULL'))!.n).toBe(1);
+  expect((await one<{n:number}>('SELECT COUNT(*) AS n FROM campaign_participants WHERE final_rank IS NULL'))!.n).toBe(0);
 });
 
-it('A08: disabled creators continue collecting qualified clicks and winning', async () => {
+it('A08 (fixed): disabled creators stop collecting qualified clicks and never win', async () => {
   const c=await makeCampaign(); const u=await makeCreator(); const l=await joinCampaign(c.id,u);
   await run("UPDATE users SET status='disabled' WHERE id=?",u);
-  expect((await hit(l.code)).status).toBe('qualified');
+  expect((await hit(l.code)).status).toBe('rejected');
   await finalizeCampaign(c.id);
-  expect((await one<{user_id:string}>('SELECT user_id FROM payouts'))!.user_id).toBe(u);
+  expect(await one('SELECT user_id FROM payouts')).toBeUndefined();
 });

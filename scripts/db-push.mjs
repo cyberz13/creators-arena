@@ -33,10 +33,18 @@ await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS geo_coun
 await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS geo_city TEXT");
 await sql.unsafe("ALTER TABLE IF EXISTS clicks ADD COLUMN IF NOT EXISTS signals TEXT");
 await sql.unsafe("ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS report_token TEXT");
+await sql.unsafe("ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS results_status TEXT NOT NULL DEFAULT 'open'");
+await sql.unsafe("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS participation_status TEXT NOT NULL DEFAULT 'active'");
+await sql.unsafe("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS approved INTEGER NOT NULL DEFAULT 1");
+await sql.unsafe("ALTER TABLE IF EXISTS campaign_participants ADD COLUMN IF NOT EXISTS excluded INTEGER NOT NULL DEFAULT 0");
+await sql.unsafe("ALTER TABLE IF EXISTS campaign_participants ADD COLUMN IF NOT EXISTS excluded_reason TEXT");
+await sql.unsafe("ALTER TABLE IF EXISTS notifications ADD COLUMN IF NOT EXISTS dedupe_key TEXT");
 
 for (const stmt of statements) {
   await sql.unsafe(stmt);
 }
+// Campaigns finalized before the results lifecycle existed were treated as final.
+await sql.unsafe("UPDATE campaigns SET results_status = 'final' WHERE status IN ('ended','cancelled') AND results_status = 'open'");
 console.log(`✅ Schema: ${statements.length} statement applied (+ additive migrations)`);
 
 const CATEGORIES = [

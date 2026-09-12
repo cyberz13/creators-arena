@@ -35,6 +35,10 @@ const globalForDb = globalThis as unknown as { __tahaddiDriver?: Driver };
 // ---------------- SQLite driver (dev + tests) ----------------
 
 function sqliteDriver(db: DatabaseSync): Driver {
+  // One connection → transactions must not interleave. Async callers that
+  // start a transaction while another is open wait their turn (mirrors the
+  // per-instance queue of the Postgres driver).
+  let txChain: Promise<unknown> = Promise.resolve();
   return {
     async all(sql, params) {
       return db.prepare(sql).all(...params).map((r) => ({ ...(r as Row) }));
@@ -46,15 +50,20 @@ function sqliteDriver(db: DatabaseSync): Driver {
       return Number(db.prepare(sql).run(...params).changes);
     },
     async begin(fn) {
-      db.exec("BEGIN");
-      try {
-        const out = await fn();
-        db.exec("COMMIT");
-        return out;
-      } catch (e) {
-        db.exec("ROLLBACK");
-        throw e;
-      }
+      const runTx = async () => {
+        db.exec("BEGIN");
+        try {
+          const out = await fn();
+          db.exec("COMMIT");
+          return out;
+        } catch (e) {
+          db.exec("ROLLBACK");
+          throw e;
+        }
+      };
+      const next = txChain.then(runTx, runTx);
+      txChain = next.catch(() => {});
+      return next;
     },
   };
 }
@@ -69,6 +78,12 @@ export function migrate(db: DatabaseSync) {
     ["clicks", "geo_city TEXT"],
     ["clicks", "signals TEXT"],
     ["campaigns", "report_token TEXT"],
+    ["campaigns", "results_status TEXT NOT NULL DEFAULT 'open'"],
+    ["users", "participation_status TEXT NOT NULL DEFAULT 'active'"],
+    ["users", "approved INTEGER NOT NULL DEFAULT 1"],
+    ["campaign_participants", "excluded INTEGER NOT NULL DEFAULT 0"],
+    ["campaign_participants", "excluded_reason TEXT"],
+    ["notifications", "dedupe_key TEXT"],
   ];
   for (const [table, col] of additive) {
     try {
@@ -78,6 +93,8 @@ export function migrate(db: DatabaseSync) {
     }
   }
   db.exec(schema);
+  // Campaigns finalized before the results lifecycle existed were treated as final.
+  db.exec("UPDATE campaigns SET results_status = 'final' WHERE status IN ('ended','cancelled') AND results_status = 'open'");
 }
 
 function openSqlite(): Driver {
@@ -258,9 +275,16 @@ export async function tx<T>(fn: () => Promise<T>): Promise<T> {
  * released automatically at commit/rollback. SQLite dev: no-op, its
  * single connection already serializes transactions.
  */
-export async function txSerializeOn(key: string): Promise<void> {
+export async function txSerializeOn(key: string, mode: "exclusive" | "shared" = "exclusive"): Promise<void> {
   if (process.env.DATABASE_URL && /^postgres/.test(process.env.DATABASE_URL)) {
-    await run("SELECT pg_advisory_xact_lock(hashtext(?))", key);
+    // shared: many click transactions may proceed together; an exclusive
+    // holder (review / finalization) waits for them and blocks new ones.
+    await run(
+      mode === "shared"
+        ? "SELECT pg_advisory_xact_lock_shared(hashtext(?))"
+        : "SELECT pg_advisory_xact_lock(hashtext(?))",
+      key
+    );
   }
 }
 

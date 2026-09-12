@@ -44,6 +44,17 @@ export function formatRemaining(untilMs: number, fromMs = Date.now()): string {
   return parts.join(" و");
 }
 
+/** True when the campaign ends within 48h — computed outside React render. */
+export function isEndingSoon(endAt: number, nowMs = Date.now()): boolean {
+  return endAt - nowMs < 48 * 3_600_000;
+}
+
+/** Default campaign window for the creation form (now → +7 days), as datetime-local strings. */
+export function defaultCampaignWindow(nowMs = Date.now()): { start: string; end: string } {
+  const toLocalInput = (ms: number) => new Date(ms - new Date(ms).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  return { start: toLocalInput(nowMs), end: toLocalInput(nowMs + 7 * 86_400_000) };
+}
+
 export function dayKey(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }

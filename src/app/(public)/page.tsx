@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { listActiveCampaigns, type CampaignWithStats } from "@/services/campaigns";
-import { getLeaderboard } from "@/services/leaderboard";
+import { getLeaderboard, toPublicBoard } from "@/services/leaderboard";
 import { publicStats, topCreators } from "@/services/analytics";
 import { LiveBoard } from "@/components/landing/live-board";
 import { SpotCard } from "@/components/landing/spot-card";
@@ -57,7 +57,7 @@ export default async function HomePage() {
   ]);
   const featured = [...active].sort((a, b) => b.prize_total - a.prize_total).slice(0, 3);
   const liveCampaign = active[0] ?? null;
-  const liveBoard = liveCampaign ? await getLeaderboard(liveCampaign.id, 4) : [];
+  const liveBoard = liveCampaign ? toPublicBoard(await getLeaderboard(liveCampaign.id, 4)) : [];
 
   return (
     <div>

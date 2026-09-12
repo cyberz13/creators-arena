@@ -3,7 +3,7 @@ import postgres from "postgres";
 import { requireProdAccess } from "./lib/prod-guard.mjs";
 const __dbUrl = requireProdAccess({ write: false });
 
-const sql = postgres(process.env.DATABASE_URL, { ssl: "require", max: 1, prepare: false });
+const sql = postgres(__dbUrl, { ssl: "require", max: 1, prepare: false });
 const rows = await sql.unsafe(`
   SELECT cp.username, p.campaign_id, p.qualified_count, p.last_qualified_at,
     pg_typeof(p.last_qualified_at) AS t,

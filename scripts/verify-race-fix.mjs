@@ -3,7 +3,7 @@ import postgres from "postgres";
 import { requireProdAccess } from "./lib/prod-guard.mjs";
 const __dbUrl = requireProdAccess({ write: false });
 
-const sql = postgres(process.env.DATABASE_URL, { ssl: "require", max: 1, prepare: false });
+const sql = postgres(__dbUrl, { ssl: "require", max: 1, prepare: false });
 const since = Date.now() - 10 * 60 * 1000;
 const rows = await sql.unsafe(
   `SELECT ip_hash, status, reject_reason, COUNT(*) AS c

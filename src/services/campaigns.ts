@@ -1,8 +1,10 @@
-import { id, now, one, q, run, tx } from "@/lib/db";
-import type { Campaign, Participant, Prize, TrackingLink } from "@/lib/types";
+import { execute, id, now, one, q, run, tx, txSerializeOn } from "@/lib/db";
+import type { Campaign, Participant, Prize, TrackingLink, User } from "@/lib/types";
 import { notify } from "./notifications";
 import { logAdminAction } from "./adminActions";
-import { getLeaderboard } from "./leaderboard";
+import { campaignLockKey, recomputeStandings, SYSTEM_ACTOR_ID, ensureSystemActor } from "./results";
+import { DomainError } from "./errors";
+export { DomainError } from "./errors";
 
 export interface CampaignInput {
   title: string;
@@ -17,8 +19,6 @@ export interface CampaignInput {
   /** Prize amounts by rank: [500] or [500, 250, 100]. */
   prizes: number[];
 }
-
-export class DomainError extends Error {}
 
 function validateInput(input: CampaignInput) {
   if (!input.title.trim()) throw new DomainError("عنوان الحملة مطلوب");
@@ -260,67 +260,46 @@ async function notifyEndingSoon() {
 }
 
 /**
- * Freeze results: final ranks, winners by prize snapshot, payouts (pending), notifications.
- * Idempotent — safe to call twice.
+ * End a campaign and derive PROVISIONAL results (final ranks, winners, pending
+ * payouts) for every eligible participant — no display limit.
+ *
+ * Idempotent and concurrency-safe: the transition is a conditional UPDATE
+ * ("claim") behind the campaign's advisory lock; whoever loses the claim does
+ * nothing, so two instances finalizing at the same moment cannot double-create
+ * payouts or notifications (notifications also carry dedupe keys).
+ * Winner notifications are sent when the admin confirms the results.
+ * Returns true when this call performed the transition.
  */
-export async function finalizeCampaign(campaignId: string) {
-  const c = await getCampaign(campaignId);
-  if (!c) throw new DomainError("الحملة غير موجودة");
-  if (c.status === "ended" || c.status === "cancelled") return;
-  const board = await getLeaderboard(campaignId);
-  const prizes = await getPrizes(campaignId);
-  const ts = now();
-  await tx(async () => {
-    await run("UPDATE campaigns SET status = 'ended', finalized_at = ? WHERE id = ?", ts, campaignId);
-    for (const entry of board) {
-      await run(
-        "UPDATE campaign_participants SET final_rank = ? WHERE campaign_id = ? AND user_id = ?",
-        entry.rank,
-        campaignId,
-        entry.user_id
-      );
+export async function finalizeCampaign(campaignId: string): Promise<boolean> {
+  await ensureSystemActor();
+  return tx(async () => {
+    await txSerializeOn(campaignLockKey(campaignId));
+    const ts = now();
+    const claimed = await execute(
+      `UPDATE campaigns SET status = 'ended', finalized_at = ?, results_status = 'provisional'
+       WHERE id = ? AND status IN ('active','scheduled')`,
+      ts,
+      campaignId
+    );
+    if (claimed !== 1) {
+      const exists = await one("SELECT 1 FROM campaigns WHERE id = ?", campaignId);
+      if (!exists) throw new DomainError("الحملة غير موجودة");
+      return false;
     }
-    for (const prize of prizes) {
-      const winner = board[prize.rank - 1];
-      if (!winner || winner.qualified_count <= 0) continue;
-      await run(
-        "UPDATE campaign_participants SET is_winner = 1 WHERE campaign_id = ? AND user_id = ?",
-        campaignId,
-        winner.user_id
-      );
-      await run(
-        `INSERT INTO payouts (id, campaign_id, user_id, prize_rank, amount, status, created_at)
-         VALUES (?, ?, ?, ?, ?, 'pending', ?)
-         ON CONFLICT(campaign_id, prize_rank) DO NOTHING`,
-        id(),
-        campaignId,
-        winner.user_id,
-        prize.rank,
-        prize.amount,
-        ts
-      );
-    }
-  });
-  for (const entry of board) {
-    const prize = prizes[entry.rank - 1];
-    if (prize && entry.qualified_count > 0) {
-      await notify(
-        entry.user_id,
-        "campaign_won",
-        `🏆 فزت بالمركز #${entry.rank} في ${c.title}!`,
-        `جائزتك ${prize.amount} ريال — سيتم التواصل معك لصرفها.`,
-        campaignId
-      );
-    } else {
+    const c = (await getCampaign(campaignId))!;
+    const { standings } = await recomputeStandings(campaignId, SYSTEM_ACTOR_ID);
+    for (const entry of standings) {
       await notify(
         entry.user_id,
         "campaign_ended",
         `انتهت حملة ${c.title}`,
-        `أنهيت الحملة في المركز #${entry.rank} بعدد ${entry.qualified_count} زيارة مؤهلة.`,
-        campaignId
+        `أنهيت الحملة في المركز #${entry.rank} بعدد ${entry.qualified_count} زيارة مؤهلة. النتائج أولية حتى تعتمدها الإدارة.`,
+        campaignId,
+        `campaign_ended:${campaignId}:${entry.user_id}`
       );
     }
-  }
+    return true;
+  });
 }
 
 // ---------------- Admin overrides (always logged) ----------------
@@ -374,6 +353,12 @@ export async function joinCampaign(campaignId: string, userId: string): Promise<
   if (!c) throw new DomainError("الحملة غير موجودة");
   const live = await ensureLifecycle(c);
   if (live.status !== "active") throw new DomainError("المشاركة متاحة في الحملات النشطة فقط");
+  const user = await one<User>("SELECT * FROM users WHERE id = ?", userId);
+  if (!user || user.status !== "active") throw new DomainError("الحساب غير نشط");
+  if (Number(user.approved) !== 1)
+    throw new DomainError("حسابك بانتظار اعتماد الإدارة — ستتمكن من المشاركة بعد الاعتماد");
+  if (user.participation_status !== "active")
+    throw new DomainError("المشاركة في التحديات موقوفة لهذا الحساب — تواصل مع الإدارة");
   const existing = await one<Participant>(
     "SELECT * FROM campaign_participants WHERE campaign_id = ? AND user_id = ?",
     campaignId,

@@ -1,7 +1,8 @@
 import { id, now, one, q, run, tx } from "@/lib/db";
 import { hashPassword } from "@/lib/password";
 import type { Category, CreatorProfile, User } from "@/lib/types";
-import { DomainError } from "./campaigns";
+import { DomainError } from "./errors";
+import { notify } from "./notifications";
 import { logAdminAction } from "./adminActions";
 
 export interface RegisterInput {
@@ -71,6 +72,8 @@ export async function listCategories(): Promise<Category[]> {
 export interface CreatorRow extends CreatorProfile {
   email: string;
   status: string;
+  participation_status: string;
+  approved: number;
   campaigns_count: number;
   qualified_total: number;
   wins: number;
@@ -82,7 +85,7 @@ export async function listCreators(filters?: {
   categoryId?: string;
   minFollowers?: number;
 }): Promise<CreatorRow[]> {
-  const where: string[] = ["u.role = 'creator'"];
+  const where: string[] = ["u.role = 'creator'", "u.id <> 'system'"];
   const params: (string | number)[] = [];
   if (filters?.search) {
     where.push("(cp.username LIKE ? OR cp.name LIKE ? OR u.email LIKE ?)");
@@ -98,7 +101,7 @@ export async function listCreators(filters?: {
     params.push(filters.minFollowers);
   }
   return q<CreatorRow>(
-    `SELECT cp.*, u.email, u.status, cat.name_ar AS category_name,
+    `SELECT cp.*, u.email, u.status, u.participation_status, u.approved, cat.name_ar AS category_name,
        (SELECT COUNT(*) FROM campaign_participants p WHERE p.user_id = u.id) AS campaigns_count,
        (SELECT COALESCE(SUM(p.qualified_count),0) FROM campaign_participants p WHERE p.user_id = u.id) AS qualified_total,
        (SELECT COUNT(*) FROM campaign_participants p WHERE p.user_id = u.id AND p.is_winner = 1) AS wins
@@ -113,7 +116,7 @@ export async function listCreators(filters?: {
 
 export async function getCreatorDetail(userId: string) {
   const creator = await one<CreatorRow>(
-    `SELECT cp.*, u.email, u.status, cat.name_ar AS category_name,
+    `SELECT cp.*, u.email, u.status, u.participation_status, u.approved, cat.name_ar AS category_name,
        (SELECT COUNT(*) FROM campaign_participants p WHERE p.user_id = u.id) AS campaigns_count,
        (SELECT COALESCE(SUM(p.qualified_count),0) FROM campaign_participants p WHERE p.user_id = u.id) AS qualified_total,
        (SELECT COUNT(*) FROM campaign_participants p WHERE p.user_id = u.id AND p.is_winner = 1) AS wins
@@ -172,6 +175,36 @@ export async function setUserStatus(
     userId,
     reason
   );
+}
+
+/** Login stays allowed; scoring and prizes stop until lifted. Logged. */
+export async function setParticipationStatus(
+  userId: string,
+  status: "active" | "suspended",
+  adminId: string,
+  reason: string
+) {
+  const user = await one<User>("SELECT * FROM users WHERE id = ?", userId);
+  if (!user) throw new DomainError("المستخدم غير موجود");
+  if (user.role === "admin") throw new DomainError("لا ينطبق على حساب Admin");
+  await run("UPDATE users SET participation_status = ? WHERE id = ?", status, userId);
+  await logAdminAction(
+    adminId,
+    status === "suspended" ? "participation_suspend" : "participation_resume",
+    "user",
+    userId,
+    reason
+  );
+}
+
+/** Registration approval (REGISTRATION_MODE=pending_approval). Logged; the creator is notified. */
+export async function approveCreator(userId: string, adminId: string) {
+  const user = await one<User>("SELECT * FROM users WHERE id = ?", userId);
+  if (!user) throw new DomainError("المستخدم غير موجود");
+  if (Number(user.approved) === 1) return;
+  await run("UPDATE users SET approved = 1 WHERE id = ?", userId);
+  await logAdminAction(adminId, "creator_approve", "user", userId);
+  await notify(userId, "account_approved", "✅ تم اعتماد حسابك", "يمكنك الآن الانضمام للتحديات ومشاركة رابطك.", null, `account_approved:${userId}`);
 }
 
 export interface CreatorHomeStats {

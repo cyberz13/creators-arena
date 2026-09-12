@@ -1,4 +1,4 @@
-import { id, one, q, run, tx, txSerializeOn } from "@/lib/db";
+import { execute, id, one, q, run, tx, txSerializeOn } from "@/lib/db";
 import { dayKey } from "@/lib/utils";
 import type { Click, ClickStatus, TrackingLink } from "@/lib/types";
 import { classifyClick, detectSource } from "./fraud";
@@ -6,6 +6,9 @@ import { ensureLifecycle, getCampaign } from "./campaigns";
 import { currentLeader } from "./leaderboard";
 import { notify } from "./notifications";
 import { logAdminAction } from "./adminActions";
+import { DomainError } from "./errors";
+import { campaignLockKey, notifyWinners, recomputeStandings, SYSTEM_ACTOR_ID, ensureSystemActor } from "./results";
+import { getIpIntel } from "./ip-intel";
 
 export interface IncomingClick {
   code: string;
@@ -29,41 +32,64 @@ export interface ClickResult {
   status: ClickStatus | null; // null when nothing was recorded
 }
 
+interface LinkContext extends TrackingLink {
+  excluded: number;
+  user_status: string;
+  participation_status: string;
+}
+
 /**
- * The full /go/:code pipeline: resolve link → campaign state → fraud verdict
- * → persist click → update counters/daily stats → leaderboard notifications.
- * Returns the store URL to redirect to (or null for unknown codes).
+ * The full /go/:code pipeline: resolve link → (inside one transaction, behind
+ * the campaign's shared lock) re-check campaign state and eligibility → fraud
+ * verdict → persist click → counters/daily stats → rank notifications.
+ * Everything that decides or records the outcome happens in the transaction,
+ * so a concurrent finalization or review can never interleave with it.
  */
 export async function recordClick(input: IncomingClick): Promise<ClickResult> {
   const nowMs = input.nowMs ?? Date.now();
-  const link = await one<TrackingLink>("SELECT * FROM tracking_links WHERE code = ?", input.code);
+  const link = await one<LinkContext>(
+    `SELECT t.*, p.excluded, u.status AS user_status, u.participation_status
+     FROM tracking_links t
+     JOIN campaign_participants p ON p.id = t.participant_id
+     JOIN users u ON u.id = t.user_id
+     WHERE t.code = ?`,
+    input.code
+  );
   if (!link) return { redirectUrl: null, status: null };
 
-  let campaign = (await getCampaign(link.campaign_id))!;
-  campaign = await ensureLifecycle(campaign);
+  const campaignBefore = (await getCampaign(link.campaign_id))!;
+  await ensureLifecycle(campaignBefore);
 
-  // Classify INSIDE the transaction, behind per-key advisory locks:
-  // concurrent clicks from the same ip/session serialize here, so the
-  // dedup check can never race its own write (the leak a production
-  // audit caught: several "qualified" from one IP within one minute).
-  const { verdict, previousLeader } = await tx(async () => {
+  const { verdict, previousLeader, storeUrl } = await tx(async () => {
+    // Shared campaign lock: clicks run concurrently with each other, but a
+    // review/finalization (exclusive) drains them first and blocks new ones.
+    await txSerializeOn(campaignLockKey(link.campaign_id), "shared");
     await txSerializeOn(`click-ip:${link.campaign_id}:${input.ipHash}`);
     await txSerializeOn(`click-sess:${link.campaign_id}:${input.sessionId}`);
     await txSerializeOn(`click-dev:${link.campaign_id}:${input.deviceHash}`);
 
+    const campaign = (await one<{ status: string; store_url: string }>(
+      "SELECT status, store_url FROM campaigns WHERE id = ?",
+      link.campaign_id
+    ))!;
+    const eligible =
+      Number(link.excluded) === 0 && link.user_status === "active" && link.participation_status === "active";
+
     const v =
       campaign.status !== "active"
         ? { status: "rejected" as const, reason: "campaign_inactive" }
-        : await classifyClick({
-            campaignId: link.campaign_id,
-            ipHash: input.ipHash,
-            sessionId: input.sessionId,
-            deviceHash: input.deviceHash,
-            userAgent: input.userAgent,
-            hasSecFetch: input.hasSecFetch ?? true,
-            webdriver: input.webdriver ?? false,
-            nowMs,
-          });
+        : !eligible
+          ? { status: "rejected" as const, reason: "ineligible" }
+          : await classifyClick({
+              campaignId: link.campaign_id,
+              ipHash: input.ipHash,
+              sessionId: input.sessionId,
+              deviceHash: input.deviceHash,
+              userAgent: input.userAgent,
+              hasSecFetch: input.hasSecFetch ?? true,
+              webdriver: input.webdriver ?? false,
+              nowMs,
+            });
 
     const prev = v.status === "qualified" ? await currentLeader(link.campaign_id) : null;
 
@@ -90,14 +116,12 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
       nowMs
     );
     await applyCounterDelta(link, v.status, nowMs, +1);
-    return { verdict: v, previousLeader: prev };
+    if (v.status === "qualified") await notifyRankChanges(link.campaign_id, link.user_id, prev);
+    return { verdict: v, previousLeader: prev, storeUrl: campaign.store_url };
   });
+  void previousLeader;
 
-  if (verdict.status === "qualified") {
-    await notifyRankChanges(link.campaign_id, link.user_id, previousLeader);
-  }
-
-  return { redirectUrl: campaign.store_url, status: verdict.status };
+  return { redirectUrl: storeUrl, status: verdict.status };
 }
 
 async function applyCounterDelta(
@@ -166,68 +190,152 @@ export interface ClickReviewRow extends Click {
   campaign_title: string;
 }
 
+export interface ReviewPage {
+  rows: ClickReviewRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export async function listClicksForReview(
   status: ClickStatus = "pending_review",
-  limit = 200
-): Promise<ClickReviewRow[]> {
-  return q<ClickReviewRow>(
+  page = 1,
+  pageSize = 100
+): Promise<ReviewPage> {
+  const safePage = Math.max(1, Math.floor(page));
+  const size = Math.min(200, Math.max(10, Math.floor(pageSize)));
+  const total = Number(
+    (await one<{ n: number }>("SELECT COUNT(*) AS n FROM clicks WHERE status = ?", status))?.n ?? 0
+  );
+  const rows = await q<ClickReviewRow>(
     `SELECT k.*, cp.username, c.title AS campaign_title
      FROM clicks k
      JOIN creator_profiles cp ON cp.user_id = k.user_id
      JOIN campaigns c ON c.id = k.campaign_id
      WHERE k.status = ?
-     ORDER BY k.created_at DESC LIMIT ?`,
+     ORDER BY k.created_at DESC LIMIT ? OFFSET ?`,
     status,
-    limit
+    size,
+    (safePage - 1) * size
   );
+  return { rows, total, page: safePage, pageSize: size };
 }
 
-/** Admin override: move a click to qualified/rejected and fix all counters. Logged. */
+export interface ReviewOptions {
+  /** Explicit correction of FINAL results (logged separately; reason required). */
+  correction?: boolean;
+}
+
+/**
+ * Move a click to qualified/rejected and keep every derived number consistent:
+ *  - state check + conditional UPDATE inside one transaction behind the
+ *    campaign's exclusive lock (no double-apply under concurrent reviews);
+ *  - `last_qualified_at` is re-derived from the click log (tie-break rule);
+ *  - audit row in the same transaction;
+ *  - ended campaigns: provisional results are re-derived; FINAL results are
+ *    untouchable without an explicit correction.
+ */
 export async function reviewClick(
   clickId: string,
   newStatus: "qualified" | "rejected",
   adminId: string,
-  reason: string
+  reason: string,
+  opts: ReviewOptions = {}
 ) {
-  const click = await one<Click>("SELECT * FROM clicks WHERE id = ?", clickId);
-  if (!click) throw new Error("الزيارة غير موجودة");
-  if (click.status === newStatus) return;
-  const link = (await one<TrackingLink>(
-    "SELECT * FROM tracking_links WHERE id = ?",
-    click.tracking_link_id
-  ))!;
   await tx(async () => {
-    // Reverse old status counters (keep total_clicks — the click still happened).
-    const oldCol =
-      click.status === "qualified"
-        ? "qualified_count"
-        : click.status === "rejected"
-          ? "rejected_count"
-          : "pending_count";
-    await run(`UPDATE campaign_participants SET ${oldCol} = ${oldCol} - 1 WHERE id = ?`, link.participant_id);
-    const newCol = newStatus === "qualified" ? "qualified_count" : "rejected_count";
-    await run(
-      `UPDATE campaign_participants SET ${newCol} = ${newCol} + 1${
-        newStatus === "qualified" ? ", last_qualified_at = ?" : ""
-      } WHERE id = ?`,
-      ...(newStatus === "qualified" ? [click.created_at, link.participant_id] : [link.participant_id])
-    );
-    const day = dayKey(click.created_at);
-    const oldStat =
-      click.status === "qualified" ? "qualified" : click.status === "rejected" ? "rejected" : "pending";
-    const newStat = newStatus === "qualified" ? "qualified" : "rejected";
-    await run(
-      `UPDATE campaign_daily_stats SET ${oldStat} = ${oldStat} - 1, ${newStat} = ${newStat} + 1
-       WHERE campaign_id = ? AND day = ?`,
-      click.campaign_id,
-      day
-    );
-    await run(
-      "UPDATE clicks SET status = ?, reject_reason = ? WHERE id = ?",
+    const before = await one<Click>("SELECT * FROM clicks WHERE id = ?", clickId);
+    if (!before) throw new DomainError("الزيارة غير موجودة");
+    await txSerializeOn(campaignLockKey(before.campaign_id));
+    const click = (await one<Click>("SELECT * FROM clicks WHERE id = ?", clickId))!;
+    if (click.status === newStatus) return;
+
+    const campaign = (await one<{ status: string; results_status: string; title: string; id: string }>(
+      "SELECT id, status, results_status, title FROM campaigns WHERE id = ?",
+      click.campaign_id
+    ))!;
+    if (campaign.results_status === "final" && !opts.correction)
+      throw new DomainError("نتائج هذه الحملة مثبتة — استخدم «تصحيح النتائج» الصريح مع سبب موثق");
+    if (opts.correction && !reason.trim()) throw new DomainError("سبب التصحيح مطلوب");
+
+    const changed = await execute(
+      "UPDATE clicks SET status = ?, reject_reason = ? WHERE id = ? AND status = ?",
       newStatus,
       newStatus === "rejected" ? "admin_rejected" : null,
-      clickId
+      clickId,
+      click.status
     );
+    if (changed !== 1) throw new DomainError("تغيرت حالة الزيارة أثناء المراجعة — أعد التحميل");
+
+    const link = (await one<TrackingLink>("SELECT * FROM tracking_links WHERE id = ?", click.tracking_link_id))!;
+    await applyReviewCounters(link, click, newStatus);
+    await logAdminAction(
+      adminId,
+      opts.correction ? `click_correction_${newStatus}` : `click_review_${newStatus}`,
+      "click",
+      clickId,
+      reason
+    );
+
+    if (campaign.status === "ended") {
+      const r = await recomputeStandings(campaign.id, adminId);
+      if (campaign.results_status === "final") {
+        const full = await getCampaign(campaign.id);
+        if (full) await notifyWinners(full, r);
+      }
+    }
   });
-  await logAdminAction(adminId, `click_review_${newStatus}`, "click", clickId, reason);
+}
+
+/** Counter + daily-stat deltas for a status change; last_qualified_at from the click log. */
+async function applyReviewCounters(link: TrackingLink, click: Click, newStatus: ClickStatus) {
+  const colOf = (s: ClickStatus) =>
+    s === "qualified" ? "qualified_count" : s === "rejected" ? "rejected_count" : "pending_count";
+  await run(
+    `UPDATE campaign_participants
+     SET ${colOf(click.status)} = ${colOf(click.status)} - 1,
+         ${colOf(newStatus)} = ${colOf(newStatus)} + 1,
+         last_qualified_at = (SELECT MAX(created_at) FROM clicks WHERE tracking_link_id = ? AND status = 'qualified')
+     WHERE id = ?`,
+    link.id,
+    link.participant_id
+  );
+  const statOf = (s: ClickStatus) => (s === "qualified" ? "qualified" : s === "rejected" ? "rejected" : "pending");
+  await run(
+    `UPDATE campaign_daily_stats SET ${statOf(click.status)} = ${statOf(click.status)} - 1,
+       ${statOf(newStatus)} = ${statOf(newStatus)} + 1
+     WHERE campaign_id = ? AND day = ?`,
+    click.campaign_id,
+    dayKey(click.created_at)
+  );
+}
+
+/**
+ * Clicks held as `ip_unverified` are resolved automatically once a fresh
+ * network verdict exists: clean → qualified (system-logged), risky → stays in
+ * review as `risky_ip`. Campaigns with FINAL results are left for the admin.
+ * Runs from the lifecycle sweep and right after an IP lookup completes.
+ */
+export async function reevaluateIpUnverified(ipHash?: string, limit = 200): Promise<number> {
+  await ensureSystemActor();
+  const rows = await q<Click>(
+    `SELECT * FROM clicks WHERE status = 'pending_review' AND reject_reason = 'ip_unverified'
+     ${ipHash ? "AND ip_hash = ?" : ""} ORDER BY created_at ASC LIMIT ?`,
+    ...(ipHash ? [ipHash, limit] : [limit])
+  );
+  let resolved = 0;
+  for (const click of rows) {
+    const intel = await getIpIntel(click.ip_hash);
+    if (!intel) continue;
+    if (Number(intel.risky)) {
+      await run("UPDATE clicks SET reject_reason = 'risky_ip' WHERE id = ? AND reject_reason = 'ip_unverified'", click.id);
+      continue;
+    }
+    try {
+      await reviewClick(click.id, "qualified", SYSTEM_ACTOR_ID, "auto: network verdict clean");
+      resolved += 1;
+    } catch (e) {
+      if (!(e instanceof DomainError)) throw e; // final results etc. → admin handles it
+    }
+  }
+  return resolved;
 }

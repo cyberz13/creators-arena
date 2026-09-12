@@ -3,7 +3,7 @@ import postgres from "postgres";
 import { requireProdAccess } from "./lib/prod-guard.mjs";
 const __dbUrl = requireProdAccess({ write: true });
 
-const sql = postgres(process.env.DATABASE_URL, { ssl: "require", max: 1, prepare: false });
+const sql = postgres(__dbUrl, { ssl: "require", max: 1, prepare: false });
 await sql.unsafe("DELETE FROM campaigns WHERE title LIKE '%الافتتاح%'");
 await sql.unsafe("DELETE FROM users WHERE email = 'first.arena@example.com'");
 await sql.unsafe("DELETE FROM admin_actions");

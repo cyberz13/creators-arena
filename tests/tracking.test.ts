@@ -141,6 +141,7 @@ describe("Tracking pipeline", () => {
 
   it("شبكة مشبوهة (VPN/مركز بيانات) → قيد المراجعة، والنظيفة تمر", async () => {
     const { c, link } = await setup();
+    await setSetting("ip_intel_enabled", 1);
     const vpn = visitor();
     const clean = visitor();
     await run(

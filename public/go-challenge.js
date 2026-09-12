@@ -5,7 +5,7 @@
   var cfg;
   try {
     cfg = JSON.parse(cfgEl.textContent || "{}");
-  } catch (e) {
+  } catch {
     return;
   }
   if (typeof cfg.code !== "string" || typeof cfg.t !== "string") return;
@@ -16,7 +16,7 @@
     addEventListener(ev, function () { ix++; }, { passive: true });
   });
   var tz = "";
-  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { /* unsupported */ }
   var fp = [
     screen.width, screen.height, screen.colorDepth, tz,
     navigator.hardwareConcurrency || 0, window.devicePixelRatio || 1,

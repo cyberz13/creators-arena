@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { freshDb, makeCampaign, makeCreator, visitor } from "./helpers";
 import { joinCampaign, getParticipant } from "@/services/campaigns";
 import { resetRequestLimits } from "@/lib/request-limit";
-import { q } from "@/lib/db";
+import { q, run } from "@/lib/db";
 import { GET } from "@/app/go/[code]/route";
 
 vi.mock("next/server", async (load) => ({ ...(await load<object>()), after: (fn: () => unknown) => void fn() }));
@@ -82,6 +82,13 @@ describe("/go/:code — XSS وتحقق مبكر", () => {
     expect(fetchCalls).toEqual([]);
   });
 
+  it("كود غير موجود لا يستدعي فحص الشبكة حتى مع تفعيله", async () => {
+    await run("INSERT OR REPLACE INTO settings (key, value) VALUES ('ip_intel_enabled', '1')");
+    const res = await call("zzzzzzz");
+    expect(res.status).toBe(404);
+    expect(fetchCalls).toEqual([]);
+  });
+
   it("كود سليم الصيغة لكنه غير موجود → 404 بلا استعلام IP ولا تحدٍّ", async () => {
     const res = await call("zzzzzzz");
     expect(res.status).toBe(404);
@@ -91,6 +98,7 @@ describe("/go/:code — XSS وتحقق مبكر", () => {
 
   it("صفحة التحدي: سكربت خارجي ثابت، إعدادات JSON مُرمّزة، وCSP صارمة", async () => {
     const { link } = await activeLink();
+    await run("INSERT OR REPLACE INTO settings (key, value) VALUES ('ip_intel_enabled', '1')");
     const evil = "</script><script>globalThis.__auditXss=1</script>";
     const res = await call(link.code, `?utm_source=${encodeURIComponent(evil)}`);
     expect(res.status).toBe(200);

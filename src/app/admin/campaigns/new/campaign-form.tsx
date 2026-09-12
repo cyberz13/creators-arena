@@ -8,15 +8,8 @@ import { Input, Label, Textarea, FieldError } from "@/components/ui/input";
 
 const initial: FormState = { error: null };
 
-function toLocalInput(ms: number) {
-  const d = new Date(ms - new Date().getTimezoneOffset() * 60_000);
-  return d.toISOString().slice(0, 16);
-}
-
-export function CampaignForm() {
+export function CampaignForm({ defaultStart, defaultEnd }: { defaultStart: string; defaultEnd: string }) {
   const [state, action, pending] = useActionState(createCampaignAction, initial);
-  const defaultStart = toLocalInput(Date.now());
-  const defaultEnd = toLocalInput(Date.now() + 7 * 86_400_000);
 
   return (
     <form action={action} className="space-y-5">

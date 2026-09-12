@@ -9,6 +9,8 @@ export function freshDb(): DatabaseSync {
   setDbForTests(db);
   migrate(db);
   ensureBootstrap(db);
+  // Network-intelligence lookups are an external dependency; tests opt in explicitly.
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('ip_intel_enabled', '0')").run();
   return db;
 }
 

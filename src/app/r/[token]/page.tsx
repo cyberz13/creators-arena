@@ -199,7 +199,7 @@ export default async function StoreReportPage({ params }: { params: Promise<{ to
       <footer className="mt-10 border-t border-white/10 pt-5 text-xs leading-relaxed text-zinc-500">
         كل زيارة في هذا التقرير اجتازت تحققًا متعدد الطبقات (بشرية المتصفح، بصمة جهاز فريدة، فحص
         الشبكات المشبوهة) — الزيارات المكررة والمزيفة تُستبعد ولا تُحتسب. أُنشئ التقرير آليًا من
-        بيانات المنصة الحية بتاريخ {formatDate(Date.now())}.
+        بيانات المنصة الحية بتاريخ {formatDate(report.generatedAt)}.
       </footer>
     </main>
   );

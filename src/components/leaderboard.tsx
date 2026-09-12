@@ -2,23 +2,24 @@
 
 import { useEffect, useState } from "react";
 import { Crown } from "lucide-react";
-import type { LeaderboardEntry } from "@/lib/types";
+import type { PublicBoardEntry } from "@/services/leaderboard";
 import { Avatar } from "./avatar";
 import { Card } from "./ui/card";
 import { cn, formatNumber } from "@/lib/utils";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
+/** Public leaderboard. The current user is identified by username (the public id), never by user_id. */
 export function Leaderboard({
   campaignId,
   initial,
-  myUserId,
+  myUsername,
   live = true,
   pollMs = 30_000,
 }: {
   campaignId: string;
-  initial: LeaderboardEntry[];
-  myUserId?: string | null;
+  initial: PublicBoardEntry[];
+  myUsername?: string | null;
   live?: boolean;
   pollMs?: number;
 }) {
@@ -30,7 +31,7 @@ export function Leaderboard({
       try {
         const res = await fetch(`/api/campaigns/${campaignId}/leaderboard`, { cache: "no-store" });
         if (res.ok) {
-          const data = await res.json();
+          const data = (await res.json()) as { board: PublicBoardEntry[] };
           setBoard(data.board);
         }
       } catch {
@@ -40,7 +41,7 @@ export function Leaderboard({
     return () => clearInterval(iv);
   }, [campaignId, live, pollMs]);
 
-  const myIdx = myUserId ? board.findIndex((e) => e.user_id === myUserId) : -1;
+  const myIdx = myUsername ? board.findIndex((e) => e.username === myUsername) : -1;
   const me = myIdx >= 0 ? board[myIdx] : null;
   const above = myIdx > 0 ? board[myIdx - 1] : null;
 
@@ -86,10 +87,10 @@ export function Leaderboard({
         )}
         {board.slice(0, 50).map((e) => (
           <div
-            key={e.user_id}
+            key={e.username}
             className={cn(
               "flex items-center gap-3 px-4 py-3",
-              e.user_id === myUserId && "bg-brand-500/10",
+              e.username === myUsername && "bg-brand-500/10",
               e.rank === 1 && "bg-gradient-to-l from-amber-500/10 to-transparent"
             )}
           >

@@ -74,10 +74,14 @@ export default async function AdminCreatorsPage({
                 <td className="tabular px-4 py-3 font-bold text-emerald-300">{formatNumber(c.qualified_total)}</td>
                 <td className="tabular px-4 py-3">{c.wins > 0 ? `🏆 ${formatNumber(c.wins)}` : "—"}</td>
                 <td className="px-4 py-3">
-                  {c.status === "active" ? (
-                    <Badge variant="success">نشط</Badge>
-                  ) : (
+                  {c.status !== "active" ? (
                     <Badge variant="danger">معطّل</Badge>
+                  ) : Number(c.approved) !== 1 ? (
+                    <Badge variant="warning">بانتظار الاعتماد</Badge>
+                  ) : c.participation_status === "suspended" ? (
+                    <Badge variant="warning">المشاركة معلّقة</Badge>
+                  ) : (
+                    <Badge variant="success">نشط</Badge>
                   )}
                 </td>
               </tr>

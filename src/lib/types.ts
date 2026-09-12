@@ -1,5 +1,7 @@
 export type Role = "admin" | "creator";
 export type UserStatus = "active" | "disabled";
+export type ParticipationStatus = "active" | "suspended";
+export type ResultsStatus = "open" | "provisional" | "final";
 export type CampaignStatus = "draft" | "scheduled" | "active" | "ended" | "cancelled";
 export type ClickStatus = "qualified" | "pending_review" | "rejected";
 export type PayoutStatus = "pending" | "approved" | "paid" | "rejected";
@@ -11,6 +13,8 @@ export interface User {
   password_hash: string;
   role: Role;
   status: UserStatus;
+  participation_status: ParticipationStatus;
+  approved: number;
   created_at: number;
 }
 
@@ -55,6 +59,7 @@ export interface Campaign {
   launched_at: number | null;
   finalized_at: number | null;
   report_token: string | null;
+  results_status: ResultsStatus;
 }
 
 export interface Prize {
@@ -76,6 +81,8 @@ export interface Participant {
   last_qualified_at: number | null;
   final_rank: number | null;
   is_winner: number;
+  excluded: number;
+  excluded_reason: string | null;
 }
 
 export interface TrackingLink {
@@ -126,6 +133,7 @@ export interface Notification {
   body: string;
   campaign_id: string | null;
   read: number;
+  dedupe_key: string | null;
   created_at: number;
 }
 

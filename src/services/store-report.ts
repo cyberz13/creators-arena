@@ -28,6 +28,8 @@ export async function getCampaignByReportToken(token: string): Promise<Campaign 
 }
 
 export interface StoreReport {
+  /** Epoch ms when the report data was assembled. */
+  generatedAt: number;
   qualified: number;
   uniqueDevices: number;
   blocked: number; // rejected by the fraud pipeline
@@ -84,6 +86,7 @@ export async function buildStoreReport(campaignId: string): Promise<StoreReport>
   }
 
   return {
+    generatedAt: Date.now(),
     qualified: counts?.q ?? 0,
     uniqueDevices: counts?.d ?? 0,
     blocked: counts?.r ?? 0,

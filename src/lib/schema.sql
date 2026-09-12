@@ -7,6 +7,10 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'creator' CHECK (role IN ('admin','creator')),
   status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+  -- competition eligibility is separate from login: 'suspended' can log in but never scores
+  participation_status TEXT NOT NULL DEFAULT 'active' CHECK (participation_status IN ('active','suspended')),
+  -- registration approval (REGISTRATION_MODE=pending_approval): 0 = cannot join campaigns yet
+  approved      INTEGER NOT NULL DEFAULT 1,
   created_at    INTEGER NOT NULL
 );
 
@@ -51,7 +55,9 @@ CREATE TABLE IF NOT EXISTS campaigns (
   created_at     INTEGER NOT NULL,
   launched_at    INTEGER,
   finalized_at   INTEGER,
-  report_token   TEXT
+  report_token   TEXT,
+  -- results lifecycle: open (running) → provisional (ended, under review) → final (confirmed)
+  results_status TEXT NOT NULL DEFAULT 'open' CHECK (results_status IN ('open','provisional','final'))
 );
 CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status);
 CREATE INDEX IF NOT EXISTS idx_campaigns_report ON campaigns(report_token);
@@ -78,6 +84,9 @@ CREATE TABLE IF NOT EXISTS campaign_participants (
   last_qualified_at INTEGER,
   final_rank        INTEGER,
   is_winner         INTEGER NOT NULL DEFAULT 0,
+  -- per-campaign exclusion by the admin (logged); excluded participants never rank or win
+  excluded          INTEGER NOT NULL DEFAULT 0,
+  excluded_reason   TEXT,
   UNIQUE (campaign_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_participants_campaign ON campaign_participants(campaign_id);
@@ -171,9 +180,12 @@ CREATE TABLE IF NOT EXISTS notifications (
   body        TEXT NOT NULL DEFAULT '',
   campaign_id TEXT REFERENCES campaigns(id) ON DELETE CASCADE,
   read        INTEGER NOT NULL DEFAULT 0,
+  -- idempotency key for notifications produced by retried/concurrent processes
+  dedupe_key  TEXT,
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe ON notifications(dedupe_key);
 
 CREATE TABLE IF NOT EXISTS admin_actions (
   id          TEXT PRIMARY KEY,

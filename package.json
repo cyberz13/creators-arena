@@ -13,7 +13,8 @@
     "check:http": "node scripts/http-security-check.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:pg": "node scripts/pg-concurrency-test.mjs",
-    "db:check": "node scripts/db-security-check.mjs"
+    "db:check": "node scripts/db-security-check.mjs",
+    "check:pg-dialect": "node scripts/pg-dialect-check.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -31,6 +32,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^26.2.0",
     "@types/qrcode": "^1.5.6",

@@ -301,7 +301,7 @@ export function isPostgres(): boolean {
 /** SQL expression: hour of day (0-23) in Riyadh time for an epoch-ms column — per dialect. */
 export function hourOfDayRiyadhExpr(column: string): string {
   return isPostgres()
-    ? `(EXTRACT(HOUR FROM to_timestamp(${column} / 1000.0 + 10800)))::int`
+    ? `(EXTRACT(HOUR FROM (to_timestamp(${column} / 1000.0) AT TIME ZONE 'Asia/Riyadh')))::int` // session-timezone independent
     : `CAST(strftime('%H', (${column} / 1000) + 10800, 'unixepoch') AS INTEGER)`;
 }
 

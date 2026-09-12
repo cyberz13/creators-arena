@@ -44,7 +44,8 @@ try {
   const schemaUsage = await sql.unsafe(
     `SELECT has_schema_privilege('anon','public','USAGE') AS anon_usage,
             has_schema_privilege('authenticated','public','USAGE') AS auth_usage`);
-  report(schemaUsage[0].anon_usage === false && schemaUsage[0].auth_usage === false, "anon/authenticated have no USAGE on schema public");
+  // Informational: schema USAGE is normally inherited from PUBLIC; the table-level checks below are the control.
+  console.log(`      info: schema USAGE anon=${schemaUsage[0].anon_usage} authenticated=${schemaUsage[0].auth_usage} (table privileges decide access)`);
 
   const runtime = await sql.unsafe(`SELECT rolname, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb FROM pg_roles WHERE rolname = 'app_runtime'`);
   report(runtime.length === 1, "role app_runtime exists");

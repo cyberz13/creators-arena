@@ -32,6 +32,8 @@ jobs:
         run: npm run build
       - name: Dependency audit (fails on high/critical)
         run: npm audit --omit=dev --audit-level=high
+      - name: PostgreSQL dialect + migration validation (PGlite, no server)
+        run: node scripts/pg-dialect-check.mjs
       - name: Real-HTTP security check (production build, throwaway SQLite, ephemeral secrets)
         run: node scripts/http-security-check.mjs
 

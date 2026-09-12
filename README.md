@@ -29,10 +29,14 @@ npm run dev    # http://localhost:3000
 | Admin | `admin@tahaddi.local` | `Admin@12345` |
 | Creator | `sara_style@example.com` (وكل حسابات السييد) | `Creator@123` |
 
+> كلمات المرور الجديدة يجب أن تكون 10 أحرف على الأقل بحروف وأرقام؛ حسابات السييد للتطوير فقط. أول دخول للأدمن يفرض تفعيل المصادقة الثنائية.
+
 ### أوامر
 
 ```bash
-npm test        # 24 اختبارًا لمنطق الأعمال (تتبع، احتيال، ترتيب، جوائز)
+npm test        # 91 اختبارًا (تتبع، احتيال، نتائج، جوائز، جلسات، MFA، XSS، بيئة)
+npm run check:http   # فحص أمني عبر HTTP حقيقي على بناء الإنتاج
+npm run test:pg      # إثبات التزامن على PostgreSQL محلي (TEST_DATABASE_URL)
 npm run build   # بناء الإنتاج
 npm run seed    # يمسح قاعدة البيانات ويعيد الزرع — للتطوير فقط
 ```
@@ -44,19 +48,19 @@ npm run seed    # يمسح قاعدة البيانات ويعيد الزرع —
 - **Next.js 16 + TypeScript + Tailwind v4** — RTL بالكامل، خط IBM Plex Sans Arabic، Mobile-first
 - **قاعدة البيانات:** SQLite عبر `node:sqlite` المدمج في Node 24 — بدون ملفات ثنائية خارجية.
   الـSQL في [src/lib/schema.sql](./src/lib/schema.sql) قياسي وقابل للنقل إلى PostgreSQL/Supabase
-- **المصادقة:** جلسات JWT (httpOnly) + bcrypt — server-side بالكامل
+- **المصادقة:** جلسات مخزنة في القاعدة (توكن عشوائي، تجزئة فقط، قابلة للإلغاء) + bcrypt + MFA إلزامي للأدمن (TOTP) — راجع [SECURITY.md](./SECURITY.md)
 - **منطق الأعمال** كله في `src/services/` — الصفحات تعرض فقط
 
 ## نظام التتبع
 
-`GET /go/:code` — server-side بالكامل:
-تجزئة IP بملح سري (لا يُخزن IP خام) → كشف Bots → Rate limiting → منع التكرار
-(جلسة + IP خلال نافذة قابلة للضبط) → التصنيف `qualified / pending_review / rejected`
-→ تحديث العدادات والإحصائيات اليومية → إشعارات تغير الصدارة → تحويل لرابط المتجر.
+`GET /go/:code` بخطوتين: صفحة تحقق تحمّل سكربتًا ثابتًا (`/go-challenge.js`) وتحصل على رمز أحادي الاستخدام مرتبط بالكود والـIP والزائر، ثم الطلب الثاني يُصنَّف داخل معاملة واحدة خلف أقفال استشارية:
+تجزئة IP بملح سري (لا يُخزن IP خام) → كشف Bots → أهلية المشارك → حد الطلبات → منع التكرار
+(جلسة + جهاز خلال نافذة قابلة للضبط) → فحص الشبكة (VPN/مركز بيانات؛ وبدون نتيجة تُحجز الزيارة للمراجعة)
+→ التصنيف `qualified / pending_review / rejected` → تحديث العدادات والإحصائيات اليومية → تحويل لرابط المتجر.
 
-الترتيب يعتمد على الزيارات المؤهلة فقط، وكسر التعادل لمن وصل للعدد أولًا. حساسية
-كشف الاحتيال قابلة للضبط من **لوحة الأدمن → الإعدادات**، والزيارات المشبوهة تُعرض
-في **مراجعة الزيارات** لقرار يدوي.
+الزيارة المؤهلة تعني: تحويلًا اجتاز فلاتر المنصة ولم يُصنَّف كمكرر أو آلي — لا تثبت بذاتها اكتمال تحميل صفحة المتجر أو حدوث شراء.
+الترتيب على الزيارات المؤهلة فقط، وكسر التعادل لمن بلغ عدده الحالي أولًا (يُعاد اشتقاقه من سجل الزيارات عند كل مراجعة).
+النتائج بعد الانتهاء **أولية** حتى يثبّتها الأدمن، ولا تُعتمد الجوائز قبل ذلك. حساسية الفلاتر من **الإعدادات**، والزيارات المشبوهة في **مراجعة الزيارات**.
 
 ## قاعدة البيانات — سائقان خلف واجهة واحدة
 
@@ -68,13 +72,14 @@ npm run seed    # يمسح قاعدة البيانات ويعيد الزرع —
 
 1. **Supabase**: أنشئ مشروعًا من [supabase.com](https://supabase.com) → Settings → Database →
    انسخ رابط **Transaction Pooler** (المنفذ 6543).
-2. **جهّز القاعدة** (مرة واحدة، من جهازك):
+2. **جهّز القاعدة** (مرة واحدة، من جهازك، باتصال المالك وليس اتصال التطبيق):
    ```bash
-   DATABASE_URL="postgresql://..." ADMIN_PASSWORD="كلمة-قوية" npm run db:push
+   MIGRATION_DATABASE_URL="postgresql://..." CONFIRM_PROD_WRITE=I_UNDERSTAND ADMIN_PASSWORD="كلمة-قوية-12+" npm run db:push
    ```
+   ثم طبّق `migrations/0001_deny_by_default.sql` من SQL editor وأنشئ كلمة مرور لدور `app_runtime` (راجع PRODUCTION_CHECKLIST.md).
    ينشئ الجداول والتصنيفات وحساب الأدمن — idempotent وآمن التكرار.
 3. **Vercel**: اربط المستودع (أو `npx vercel`) واضبط Environment Variables:
-   `DATABASE_URL`, `SESSION_SECRET`, `IP_HASH_SALT`, `NEXT_PUBLIC_APP_URL` (نطاق الموقع).
+   `DATABASE_URL` (بدور app_runtime)، `SESSION_SECRET`، `CHALLENGE_SECRET`، `IP_HASH_SALT`، `MFA_ENCRYPTION_KEY`، `NEXT_PUBLIC_APP_URL`، `REGISTRATION_MODE` — كلها إلزامية والنشر يفشل بدونها (راجع `.env.example`).
 4. انشر. رؤوس `X-Forwarded-For` التي يعتمد عليها كشف الاحتيال تصل تلقائيًا على Vercel.
 
 **لا تشغّل `npm run seed` على الإنتاج** — إنه لبيانات SQLite التجريبية المحلية فقط (ويرفض العمل إذا وجد `DATABASE_URL`).

@@ -124,9 +124,14 @@ function toDollarParams(sql: string): string {
 }
 
 function openPostgres(url: string): Driver {
+  // TLS is mandatory for any remote host (Supabase). Only a loopback host or an
+  // explicit sslmode=disable (local test containers) turns it off.
+  const parsed = new URL(url);
+  const localHost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]";
+  const sslOff = localHost || parsed.searchParams.get("sslmode") === "disable";
   const mk = () =>
     postgres(url, {
-      ssl: "require",
+      ssl: sslOff ? false : "require",
       max: Number(process.env.PG_POOL_MAX ?? 1), // Supabase pooler-friendly (serverless)
       prepare: false, // required for Supabase transaction-mode pooling (port 6543)
       connect_timeout: 10,

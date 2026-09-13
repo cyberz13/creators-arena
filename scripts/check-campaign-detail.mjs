@@ -1,6 +1,8 @@
 // Diagnostic: integrity of one campaign's related rows (PGURL env, TITLE env).
 import postgres from "postgres";
-const sql = postgres(process.env.PGURL, { ssl: "require", max: 1, prepare: false });
+import { requireProdAccess } from "./lib/prod-guard.mjs";
+const __dbUrl = requireProdAccess({ write: false });
+const sql = postgres(__dbUrl, { ssl: "require", max: 1, prepare: false });
 const title = process.env.TITLE ?? "regerg";
 const [c] = await sql.unsafe("SELECT * FROM campaigns WHERE title = $1 LIMIT 1", [title]);
 if (!c) { console.log("campaign not found"); process.exit(0); }

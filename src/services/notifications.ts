@@ -9,24 +9,35 @@ export type NotificationType =
   | "campaign_ended"
   | "campaign_won"
   | "prize_approved"
-  | "prize_paid";
+  | "prize_paid"
+  | "account_approved";
 
+/**
+ * Inserts a notification. When `dedupeKey` is given the insert is idempotent
+ * (unique index on notifications.dedupe_key), so retried or concurrent
+ * processes — e.g. two instances finalizing the same campaign — never
+ * produce duplicates. Callers invoke this INSIDE the transaction that
+ * produced the event, so a notification never outlives a rolled-back write.
+ */
 export async function notify(
   userId: string,
   type: NotificationType,
   title: string,
   body = "",
-  campaignId: string | null = null
+  campaignId: string | null = null,
+  dedupeKey: string | null = null
 ) {
   await run(
-    `INSERT INTO notifications (id, user_id, type, title, body, campaign_id, read, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
+    `INSERT INTO notifications (id, user_id, type, title, body, campaign_id, read, dedupe_key, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+     ON CONFLICT(dedupe_key) DO NOTHING`,
     id(),
     userId,
     type,
     title,
     body,
     campaignId,
+    dedupeKey,
     now()
   );
 }

@@ -11,6 +11,7 @@ import { CopyLink } from "@/components/copy-link";
 import { LicenseNotice } from "@/components/license-notice";
 import { formatNumber, formatRemaining, formatSAR } from "@/lib/utils";
 import { requestOrigin } from "@/lib/origin";
+import { emailVerificationRequired } from "@/services/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -38,6 +39,19 @@ export default async function CreatorHome() {
         </h1>
         <p className="mt-1 text-sm text-zinc-400">جاهز تتصدر اليوم؟</p>
       </div>
+
+      {!user.approved && (
+        <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
+          <p className="font-bold">⏳ حسابك بانتظار اعتماد الإدارة</p>
+          <p className="mt-1 text-amber-100/80">ستتمكن من الانضمام للتحديات وأخذ رابطك فور الاعتماد — عادةً خلال يوم عمل.</p>
+        </div>
+      )}
+      {user.approved && !user.emailVerified && emailVerificationRequired() && (
+        <div className="rounded-2xl border border-brand-500/30 bg-brand-500/10 p-4 text-sm text-brand-100">
+          <p className="font-bold">✉️ أكّد بريدك الإلكتروني</p>
+          <p className="mt-1 text-brand-100/80">أرسلنا رابط تأكيد إلى {user.email}. يمكنك إعادة الإرسال من صفحة ملفي.</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="أرباحي" value={formatSAR(stats.totalPrizes)} hint={stats.paidPrizes > 0 ? `${formatSAR(stats.paidPrizes)} مدفوعة` : undefined} icon={<Wallet className="size-5" />} accent="gold" />

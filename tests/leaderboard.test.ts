@@ -4,6 +4,7 @@ import { joinCampaign, finalizeCampaign, getCampaign, DomainError } from "@/serv
 import { recordClick } from "@/services/tracking";
 import { getLeaderboard, getMyPosition } from "@/services/leaderboard";
 import { listPayouts, updatePayoutStatus } from "@/services/payouts";
+import { confirmResults } from "@/services/results";
 import { q } from "@/lib/db";
 
 beforeEach(() => {
@@ -114,10 +115,11 @@ describe("حالات دفع الجائزة", () => {
     const l = await joinCampaign(c.id, u);
     await hit(l.code, Date.now());
     await finalizeCampaign(c.id);
+    await confirmResults(c.id, await adminId());
     const payout = (await listPayouts())[0];
-    await expect(updatePayoutStatus(payout.id, "paid", await adminId())).rejects.toThrow(DomainError);
+    await expect(updatePayoutStatus(payout.id, "paid", await adminId(), "", { reauthenticated: true })).rejects.toThrow(DomainError);
     await updatePayoutStatus(payout.id, "approved", await adminId());
-    await updatePayoutStatus(payout.id, "paid", await adminId());
+    await updatePayoutStatus(payout.id, "paid", await adminId(), "", { reauthenticated: true });
     expect((await listPayouts("paid")).length).toBe(1);
     await expect(updatePayoutStatus(payout.id, "pending", await adminId())).rejects.toThrow(DomainError);
   });

@@ -4,6 +4,8 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/avatar";
 import { formatNumber, formatSAR } from "@/lib/utils";
+import { emailVerificationRequired } from "@/services/auth";
+import { ChangePasswordForm, SessionControls } from "./security-forms";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "ملفي" };
@@ -64,6 +66,9 @@ export default async function ProfilePage() {
         <p className="text-sm font-semibold text-zinc-300">البريد الإلكتروني</p>
         <p className="mt-1 text-sm text-zinc-400" dir="ltr">{user.email}</p>
       </Card>
+
+      <ChangePasswordForm />
+      <SessionControls emailVerified={user.emailVerified} mailEnabled={emailVerificationRequired()} />
     </div>
   );
 }

@@ -22,10 +22,62 @@ function sqliteModule() {
 export type Row = Record<string, unknown>;
 export type Param = string | number | null;
 
+export interface TxOptions {
+  /**
+   * Stable per-operation key (e.g. the challenge nonce of a click). With a key,
+   * the transaction is recorded in `tx_ledger` inside the same transaction:
+   * a retry after an UNKNOWN commit outcome replays the stored result instead
+   * of executing the writes twice. Without a key, an uncertain outcome is
+   * reported as DbUncertainError (never silently re-executed).
+   */
+  idempotencyKey?: string;
+}
+
 interface Driver {
   all(sql: string, params: Param[]): Promise<Row[]>;
   run(sql: string, params: Param[]): Promise<void>;
-  begin<T>(fn: () => Promise<T>): Promise<T>;
+  /** Like run, but returns the number of affected rows (conditional updates). */
+  execute(sql: string, params: Param[]): Promise<number>;
+  begin<T>(fn: () => Promise<T>, opts: TxOptions): Promise<T>;
+}
+
+/**
+ * The database may or may not have applied the operation (the connection
+ * dropped or timed out after the statement/COMMIT was sent). Callers must not
+ * assume failure; idempotent operations (tx with a key) are replayed safely.
+ */
+export class DbUncertainError extends Error {
+  constructor(cause: unknown) {
+    super("database operation outcome unknown (connection lost after send)");
+    this.name = "DbUncertainError";
+    this.cause = cause;
+  }
+}
+
+/**
+ * Failure classes for the Postgres driver:
+ *  - "pre_send": the connection could never be established → nothing reached
+ *    the server → always safe to retry;
+ *  - "uncertain": lost/timed-out AFTER something may have been sent → safe
+ *    only for reads or ledger-keyed transactions;
+ *  - "definite": the server answered with an error (SQL/constraint/domain) →
+ *    retrying repeats the same error; never retried.
+ */
+export type PgFailureClass = "pre_send" | "uncertain" | "definite";
+export function classifyPgError(e: unknown, sent: boolean): PgFailureClass {
+  const code = (e as { code?: string } | null)?.code;
+  const msg = e instanceof Error ? e.message : "";
+  if (code === "CONNECT_TIMEOUT" || code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN") return "pre_send";
+  const lost =
+    msg === "pg_op_timeout" ||
+    code === "CONNECTION_CLOSED" ||
+    code === "CONNECTION_ENDED" ||
+    code === "CONNECTION_DESTROYED" ||
+    code === "ECONNRESET" ||
+    code === "EPIPE" ||
+    code === "ETIMEDOUT";
+  if (!lost) return "definite";
+  return sent ? "uncertain" : "pre_send";
 }
 
 const globalForDb = globalThis as unknown as { __tahaddiDriver?: Driver };
@@ -33,6 +85,10 @@ const globalForDb = globalThis as unknown as { __tahaddiDriver?: Driver };
 // ---------------- SQLite driver (dev + tests) ----------------
 
 function sqliteDriver(db: DatabaseSync): Driver {
+  // One connection → transactions must not interleave. Async callers that
+  // start a transaction while another is open wait their turn (mirrors the
+  // per-instance queue of the Postgres driver).
+  let txChain: Promise<unknown> = Promise.resolve();
   return {
     async all(sql, params) {
       return db.prepare(sql).all(...params).map((r) => ({ ...(r as Row) }));
@@ -40,16 +96,25 @@ function sqliteDriver(db: DatabaseSync): Driver {
     async run(sql, params) {
       db.prepare(sql).run(...params);
     },
+    async execute(sql, params) {
+      return Number(db.prepare(sql).run(...params).changes);
+    },
     async begin(fn) {
-      db.exec("BEGIN");
-      try {
-        const out = await fn();
-        db.exec("COMMIT");
-        return out;
-      } catch (e) {
-        db.exec("ROLLBACK");
-        throw e;
-      }
+      // In-process engine: a failure is always definite (no lost-COMMIT case).
+      const runTx = async () => {
+        db.exec("BEGIN");
+        try {
+          const out = await fn();
+          db.exec("COMMIT");
+          return out;
+        } catch (e) {
+          db.exec("ROLLBACK");
+          throw e;
+        }
+      };
+      const next = txChain.then(runTx, runTx);
+      txChain = next.catch(() => {});
+      return next;
     },
   };
 }
@@ -64,6 +129,19 @@ export function migrate(db: DatabaseSync) {
     ["clicks", "geo_city TEXT"],
     ["clicks", "signals TEXT"],
     ["campaigns", "report_token TEXT"],
+    ["campaigns", "results_status TEXT NOT NULL DEFAULT 'open'"],
+    ["campaigns", "report_token_expires_at INTEGER"],
+    ["campaigns", "report_views INTEGER NOT NULL DEFAULT 0"],
+    ["campaigns", "report_last_viewed_at INTEGER"],
+    ["users", "participation_status TEXT NOT NULL DEFAULT 'active'"],
+    ["users", "approved INTEGER NOT NULL DEFAULT 1"],
+    ["campaign_participants", "excluded INTEGER NOT NULL DEFAULT 0"],
+    ["campaign_participants", "excluded_reason TEXT"],
+    ["notifications", "dedupe_key TEXT"],
+    ["users", "email_verified INTEGER NOT NULL DEFAULT 1"],
+    ["users", "mfa_enabled INTEGER NOT NULL DEFAULT 0"],
+    ["users", "mfa_secret_enc TEXT"],
+    ["sessions", "mfa_verified_at INTEGER"],
   ];
   for (const [table, col] of additive) {
     try {
@@ -73,6 +151,8 @@ export function migrate(db: DatabaseSync) {
     }
   }
   db.exec(schema);
+  // Campaigns finalized before the results lifecycle existed were treated as final.
+  db.exec("UPDATE campaigns SET results_status = 'final' WHERE status IN ('ended','cancelled') AND results_status = 'open'");
 }
 
 function openSqlite(): Driver {
@@ -96,9 +176,14 @@ function toDollarParams(sql: string): string {
 }
 
 function openPostgres(url: string): Driver {
+  // TLS is mandatory for any remote host (Supabase). Only a loopback host or an
+  // explicit sslmode=disable (local test containers) turns it off.
+  const parsed = new URL(url);
+  const localHost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]";
+  const sslOff = localHost || parsed.searchParams.get("sslmode") === "disable";
   const mk = () =>
     postgres(url, {
-      ssl: "require",
+      ssl: sslOff ? false : "require",
       max: Number(process.env.PG_POOL_MAX ?? 1), // Supabase pooler-friendly (serverless)
       prepare: false, // required for Supabase transaction-mode pooling (port 6543)
       connect_timeout: 10,
@@ -144,17 +229,32 @@ function openPostgres(url: string): Driver {
     return next;
   }
 
-  async function withRetry<T>(fn: (s: PgSql) => Promise<T>): Promise<T> {
+  function rebuild() {
+    const stale = sql;
+    sql = mk();
+    stale.end({ timeout: 1 }).catch(() => {});
+  }
+
+  /**
+   * One statement outside a transaction. A read is retried once on any
+   * connection failure (idempotent by nature). A write is retried only when
+   * the failure happened before anything was sent; a write whose outcome is
+   * unknown surfaces as DbUncertainError instead of being executed twice.
+   */
+  async function withRetry<T>(fn: (s: PgSql) => Promise<T>, kind: "read" | "write"): Promise<T> {
     const inTx = txStore.getStore();
     if (inTx) return fn(inTx); // inside a transaction: already on the tx connection
     return enqueue(async () => {
       try {
         return await capped(fn(sql));
-      } catch {
-        const stale = sql;
-        sql = mk();
-        stale.end({ timeout: 1 }).catch(() => {});
-        return capped(fn(sql));
+      } catch (e) {
+        // A single statement is "sent" as soon as a connection existed; we
+        // cannot tell whether the server processed it before the drop.
+        const cls = classifyPgError(e, true);
+        if (cls === "definite") throw e;
+        rebuild();
+        if (cls === "pre_send" || kind === "read") return capped(fn(sql));
+        throw new DbUncertainError(e);
       }
     });
   }
@@ -162,38 +262,63 @@ function openPostgres(url: string): Driver {
   return {
     async all(text, params) {
       return (await withRetry(
-        (s) => s.unsafe(toDollarParams(text), params as never[]) as unknown as Promise<Row[]>
+        (s) => s.unsafe(toDollarParams(text), params as never[]) as unknown as Promise<Row[]>,
+        "read"
       )) as Row[];
     },
     async run(text, params) {
-      await withRetry((s) => s.unsafe(toDollarParams(text), params as never[]) as unknown as Promise<unknown>);
+      await withRetry((s) => s.unsafe(toDollarParams(text), params as never[]) as unknown as Promise<unknown>, "write");
     },
-    async begin(fn) {
+    async execute(text, params) {
+      const res = (await withRetry(
+        (s) => s.unsafe(toDollarParams(text), params as never[]) as unknown as Promise<{ count: number }>,
+        "write"
+      )) as { count: number };
+      return Number(res.count ?? 0);
+    },
+    async begin(fn, opts) {
       // Transactions go through the same queue — a tx pins the sole connection,
       // so a concurrent standalone query would otherwise interleave (pipeline).
-      return enqueue(() => beginInner(fn)) as Promise<never>;
+      return enqueue(() => beginInner(fn, opts)) as Promise<never>;
     },
   };
 
-  async function beginInner<T>(fn: () => Promise<T>): Promise<T> {
-    // Retry the whole transaction once on connection failure (implicit rollback).
+  /**
+   * Whole-transaction retry policy:
+   *  - failure before BEGIN reached the server ("pre_send") → retry once;
+   *  - failure after that (timeout / dropped connection, COMMIT outcome
+   *    unknown) → retry once ONLY when the caller supplied an idempotency
+   *    key (the ledger makes the replay exact); otherwise DbUncertainError;
+   *  - server-side errors → thrown as-is, never retried.
+   */
+  async function beginInner<T>(fn: () => Promise<T>, opts: TxOptions): Promise<T> {
+    let sent = false;
     const attempt = () =>
-      capped(sql.begin((txSql) => txStore.run(txSql as unknown as PgSql, fn)) as Promise<T>, TX_TIMEOUT_MS);
+      capped(
+        sql.begin((txSql) => {
+          sent = true; // BEGIN was accepted: from here on the server may have state
+          return txStore.run(txSql as unknown as PgSql, fn);
+        }) as Promise<T>,
+        TX_TIMEOUT_MS
+      );
     try {
       return await attempt();
     } catch (e) {
-      const code = (e as { code?: string }).code;
-      const retriable =
-        (e instanceof Error && e.message === "pg_op_timeout") ||
-        code === "CONNECTION_CLOSED" ||
-        code === "CONNECT_TIMEOUT";
-      if (!retriable) {
-        throw e; // domain/SQL error — retrying would just repeat it
+      const cls = classifyPgError(e, sent);
+      if (cls === "definite") throw e; // domain/SQL error — retrying would just repeat it
+      rebuild();
+      if (cls === "pre_send" || opts.idempotencyKey) {
+        sent = false;
+        try {
+          return await attempt();
+        } catch (e2) {
+          // One retry only. A second connection failure is reported honestly
+          // as "unknown outcome"; a server error is thrown as-is.
+          if (classifyPgError(e2, sent) === "definite") throw e2;
+          throw new DbUncertainError(e2);
+        }
       }
-      const stale = sql;
-      sql = mk();
-      stale.end({ timeout: 1 }).catch(() => {});
-      return attempt();
+      throw new DbUncertainError(e);
     }
   }
 }
@@ -232,8 +357,47 @@ export async function run(sql: string, ...params: Param[]): Promise<void> {
   await getDriver().run(sql, params);
 }
 
-export async function tx<T>(fn: () => Promise<T>): Promise<T> {
-  return getDriver().begin(fn);
+/** Run a statement and return affected rows — the primitive for conditional, idempotent writes. */
+export async function execute(sql: string, ...params: Param[]): Promise<number> {
+  return getDriver().execute(sql, params);
+}
+
+const REPLAY = Symbol("tx_replay");
+
+/**
+ * Runs `fn` in a transaction. With `idempotencyKey`, the key is claimed in
+ * `tx_ledger` INSIDE the transaction (so it commits or rolls back with the
+ * writes) and the JSON result is stored next to it; a second run with the same
+ * key — a retry after a lost COMMIT, or a concurrent duplicate — returns the
+ * stored result without touching anything (a concurrent claimant blocks on the
+ * unique key until the first commits, then sees it). Rows are purged after
+ * TX_LEDGER_RETENTION_MS by purgeTxLedger().
+ */
+export async function tx<T>(fn: () => Promise<T>, opts: TxOptions = {}): Promise<T> {
+  const key = opts.idempotencyKey;
+  if (!key) return getDriver().begin(fn, opts);
+  const out = await getDriver().begin(async () => {
+    const claimed = await execute(
+      "INSERT INTO tx_ledger (key, result, created_at) VALUES (?, NULL, ?) ON CONFLICT (key) DO NOTHING",
+      key,
+      Date.now()
+    );
+    if (claimed !== 1) {
+      const row = await one<{ result: string | null }>("SELECT result FROM tx_ledger WHERE key = ?", key);
+      return { [REPLAY]: true, value: row?.result == null ? undefined : (JSON.parse(row.result) as T) };
+    }
+    const value = await fn();
+    await run("UPDATE tx_ledger SET result = ? WHERE key = ?", JSON.stringify(value ?? null), key);
+    return { [REPLAY]: false, value };
+  }, opts);
+  return (out as { value: T }).value;
+}
+
+export const TX_LEDGER_RETENTION_MS = 24 * 3_600_000;
+
+/** Housekeeping for the idempotency ledger (keys are useless after their retry window). */
+export async function purgeTxLedger(nowMs = Date.now()): Promise<void> {
+  await run("DELETE FROM tx_ledger WHERE created_at < ?", nowMs - TX_LEDGER_RETENTION_MS);
 }
 
 /**
@@ -242,10 +406,28 @@ export async function tx<T>(fn: () => Promise<T>): Promise<T> {
  * released automatically at commit/rollback. SQLite dev: no-op, its
  * single connection already serializes transactions.
  */
-export async function txSerializeOn(key: string): Promise<void> {
+export async function txSerializeOn(key: string, mode: "exclusive" | "shared" = "exclusive"): Promise<void> {
   if (process.env.DATABASE_URL && /^postgres/.test(process.env.DATABASE_URL)) {
-    await run("SELECT pg_advisory_xact_lock(hashtext(?))", key);
+    // shared: many click transactions may proceed together; an exclusive
+    // holder (review / finalization) waits for them and blocks new ones.
+    await run(
+      mode === "shared"
+        ? "SELECT pg_advisory_xact_lock_shared(hashtext(?))"
+        : "SELECT pg_advisory_xact_lock(hashtext(?))",
+      key
+    );
   }
+}
+
+export function isPostgres(): boolean {
+  return !!process.env.DATABASE_URL && /^postgres/.test(process.env.DATABASE_URL);
+}
+
+/** SQL expression: hour of day (0-23) in Riyadh time for an epoch-ms column — per dialect. */
+export function hourOfDayRiyadhExpr(column: string): string {
+  return isPostgres()
+    ? `(EXTRACT(HOUR FROM (to_timestamp(${column} / 1000.0) AT TIME ZONE 'Asia/Riyadh')))::int` // session-timezone independent
+    : `CAST(strftime('%H', (${column} / 1000) + 10800, 'unixepoch') AS INTEGER)`;
 }
 
 export const id = () => crypto.randomUUID();

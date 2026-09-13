@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "security/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # NODE_ENV is set per step: only the test step runs as "test". A job-wide
+    # NODE_ENV=test would be inlined into the production build (HSTS etc.).
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit & integration tests (SQLite)
+        run: npm test
+        env:
+          NODE_ENV: test
+      - name: Production build
+        run: npm run build
+      - name: Dependency audit (fails on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+      - name: PostgreSQL dialect + migration validation (PGlite, no server)
+        run: node scripts/pg-dialect-check.mjs
+      - name: Real-HTTP security check (production build, throwaway SQLite, ephemeral secrets)
+        run: node scripts/http-security-check.mjs
+
+  postgres-concurrency:
+    # Multi-process concurrency proof against a real PostgreSQL (advisory locks,
+    # conditional updates, idempotent finalization). SQLite cannot prove this.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: creators_arena_test
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Concurrency harness
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5433/creators_arena_test
+        run: node scripts/pg-concurrency-test.mjs

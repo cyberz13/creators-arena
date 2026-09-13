@@ -8,15 +8,8 @@ import { Input, Label, Textarea, FieldError } from "@/components/ui/input";
 
 const initial: FormState = { error: null };
 
-function toLocalInput(ms: number) {
-  const d = new Date(ms - new Date().getTimezoneOffset() * 60_000);
-  return d.toISOString().slice(0, 16);
-}
-
-export function CampaignForm() {
+export function CampaignForm({ defaultStart, defaultEnd }: { defaultStart: string; defaultEnd: string }) {
   const [state, action, pending] = useActionState(createCampaignAction, initial);
-  const defaultStart = toLocalInput(Date.now());
-  const defaultEnd = toLocalInput(Date.now() + 7 * 86_400_000);
 
   return (
     <form action={action} className="space-y-5">
@@ -60,11 +53,11 @@ export function CampaignForm() {
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <Label htmlFor="start_at">تاريخ البداية</Label>
+            <Label htmlFor="start_at">تاريخ البداية (بتوقيت الرياض)</Label>
             <Input id="start_at" name="start_at" type="datetime-local" required defaultValue={defaultStart} dir="ltr" />
           </div>
           <div>
-            <Label htmlFor="end_at">تاريخ النهاية</Label>
+            <Label htmlFor="end_at">تاريخ النهاية (بتوقيت الرياض)</Label>
             <Input id="end_at" name="end_at" type="datetime-local" required defaultValue={defaultEnd} dir="ltr" />
           </div>
         </div>

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { listActiveCampaigns, type CampaignWithStats, type MarketplaceSort } from "@/services/campaigns";
 import { SpotCard } from "@/components/landing/spot-card";
-import { cn, formatNumber } from "@/lib/utils";
+import { cn, formatNumber, isEndingSoon } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "التحديات" };
@@ -87,7 +87,7 @@ export default async function CampaignsPage({
                   <div className="flex items-center justify-between gap-2.5">
                     <span className="text-xs text-zinc-500">{c.store_name}</span>
                     <span className="rounded-md bg-brand-800 px-2.5 py-0.5 text-[11px] text-brand-100">
-                      {c.end_at - Date.now() < 48 * 3_600_000 ? "ينتهي قريباً" : "مفتوح"}
+                      {isEndingSoon(c.end_at) ? "ينتهي قريباً" : "مفتوح"}
                     </span>
                   </div>
                   <h4 className="text-lg font-semibold">{c.title}</h4>

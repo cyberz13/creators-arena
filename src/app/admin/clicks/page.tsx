@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { listClicksForReview } from "@/services/tracking";
+import { q } from "@/lib/db";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ReviewButtons } from "./review-buttons";
@@ -19,6 +20,8 @@ const REASON_LABELS: Record<string, string> = {
   missing_sec_fetch: "متصفح بلا بصمة تصفح",
   automation: "متصفح مؤتمت (Selenium/Puppeteer)",
   risky_ip: "شبكة مشبوهة (VPN / مركز بيانات)",
+  ip_unverified: "بانتظار فحص الشبكة",
+  ineligible: "مشارك غير مؤهل (معلّق/مستبعد)",
   campaign_inactive: "حملة غير نشطة",
   admin_rejected: "رفض إداري",
 };
@@ -26,11 +29,25 @@ const REASON_LABELS: Record<string, string> = {
 export default async function AdminClicksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; page?: string }>;
 }) {
-  const { tab } = await searchParams;
+  const { tab, page } = await searchParams;
   const activeTab = tab === "rejected" ? "rejected" : "pending_review";
-  const clicks = await listClicksForReview(activeTab, 200);
+  const pageNum = Math.max(1, Number(page) || 1);
+  const result = await listClicksForReview(activeTab, pageNum, 100);
+  const clicks = result.rows;
+  const pages = Math.max(1, Math.ceil(result.total / result.pageSize));
+
+  // Which of the listed campaigns already have FINAL results (reviews become corrections).
+  const campaignIds = [...new Set(clicks.map((k) => k.campaign_id))];
+  const finalIds = new Set<string>();
+  if (campaignIds.length > 0) {
+    const rows = await q<{ id: string }>(
+      `SELECT id FROM campaigns WHERE results_status = 'final' AND id IN (${campaignIds.map(() => "?").join(",")})`,
+      ...campaignIds
+    );
+    for (const r of rows) finalIds.add(r.id);
+  }
 
   return (
     <div className="space-y-6">
@@ -81,6 +98,9 @@ export default async function AdminClicksPage({
                     <Link href={`/admin/campaigns/${k.campaign_id}`} className="font-semibold text-zinc-200 hover:text-brand-300">
                       {k.campaign_title}
                     </Link>
+                    {finalIds.has(k.campaign_id) && (
+                      <span className="ms-1 text-[11px] text-amber-300">(نتائج مثبتة)</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 font-semibold">@{k.username}</td>
                   <td className="px-4 py-3">
@@ -96,14 +116,30 @@ export default async function AdminClicksPage({
                     <code className="text-xs text-zinc-500">{k.ip_hash.slice(0, 10)}…</code>
                   </td>
                   <td className="px-4 py-3 text-xs text-zinc-400">{k.source}</td>
-                  <td className="px-4 py-3"><ReviewButtons clickId={k.id} currentStatus={activeTab} /></td>
+                  <td className="px-4 py-3">
+                    <ReviewButtons clickId={k.id} currentStatus={activeTab} resultsFinal={finalIds.has(k.campaign_id)} />
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <p className="border-t border-white/[0.06] px-4 py-2 text-xs text-zinc-500">
-            {formatNumber(clicks.length)} زيارة معروضة (بحد أقصى 200)
-          </p>
+          <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-2 text-xs text-zinc-500">
+            <span>
+              {formatNumber(result.total)} زيارة — صفحة {result.page} من {pages}
+            </span>
+            <span className="flex gap-3">
+              {result.page > 1 && (
+                <Link className="font-semibold text-brand-400" href={`/admin/clicks?tab=${activeTab}&page=${result.page - 1}`}>
+                  → السابقة
+                </Link>
+              )}
+              {result.page < pages && (
+                <Link className="font-semibold text-brand-400" href={`/admin/clicks?tab=${activeTab}&page=${result.page + 1}`}>
+                  التالية ←
+                </Link>
+              )}
+            </span>
+          </div>
         </Card>
       )}
     </div>

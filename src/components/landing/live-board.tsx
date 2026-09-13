@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { LeaderboardEntry } from "@/lib/types";
+import type { PublicBoardEntry } from "@/services/leaderboard";
 import { SpotCard } from "./spot-card";
 
 /**
@@ -15,7 +15,7 @@ export function LiveBoard({
 }: {
   campaignId: string | null;
   campaignTitle: string;
-  initial: LeaderboardEntry[];
+  initial: PublicBoardEntry[];
 }) {
   const [board, setBoard] = useState(initial.slice(0, 4));
   const [delta, setDelta] = useState<number | null>(null);
@@ -27,7 +27,7 @@ export function LiveBoard({
       try {
         const res = await fetch(`/api/campaigns/${campaignId}/leaderboard`, { cache: "no-store" });
         if (!res.ok) return;
-        const data = (await res.json()) as { board: LeaderboardEntry[] };
+        const data = (await res.json()) as { board: PublicBoardEntry[] };
         const fresh = data.board.slice(0, 4);
         const total = data.board.reduce((a, e) => a + e.qualified_count, 0);
         if (total > totalRef.current) setDelta(total - totalRef.current);
@@ -67,7 +67,7 @@ export function LiveBoard({
           const pct = Math.round((r.qualified_count / top) * 100);
           return (
             <div
-              key={r.user_id}
+              key={r.username}
               className="grid grid-cols-[26px_1fr_auto] items-center gap-x-3 gap-y-2 rounded-lg px-2.5 py-3"
               style={{ background: me ? "#2b2741" : "transparent" }}
             >

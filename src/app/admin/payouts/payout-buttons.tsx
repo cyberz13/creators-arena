@@ -16,8 +16,9 @@ export function PayoutButtons({ payoutId, status }: { payoutId: string; status: 
         <ActionButton
           label="💰 تم الدفع"
           variant="gold"
-          confirmText="تأكيد أن الجائزة حُوّلت للفائز فعليًا؟"
-          onRun={() => updatePayoutAction(payoutId, "paid", "")}
+          askValue={{ prompt: "كلمة مرور الأدمن لتأكيد الدفع", type: "password" }}
+          confirmText="تأكيد أن الجائزة حُوّلت للفائز فعليًا؟ هذا الإجراء نهائي."
+          onRun={(_reason, password) => updatePayoutAction(payoutId, "paid", "", password)}
         />
       )}
       {status === "rejected" && (

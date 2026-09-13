@@ -36,10 +36,17 @@ export default async function AdminCreatorDetail({ params }: { params: Promise<{
                 ) : (
                   <Badge variant="danger">معطّل</Badge>
                 )}
+                {creator.participation_status === "suspended" && <Badge variant="warning">المشاركة معلّقة</Badge>}
+                {Number(creator.approved) !== 1 && <Badge variant="warning">بانتظار الاعتماد</Badge>}
               </div>
             </div>
           </div>
-          <StatusToggle userId={id} status={creator.status} />
+          <StatusToggle
+            userId={id}
+            status={creator.status}
+            participation={creator.participation_status}
+            approved={Number(creator.approved) === 1}
+          />
         </div>
         <div className="mt-5 grid grid-cols-2 gap-3 border-t border-white/[0.06] pt-4 sm:grid-cols-4">
           {[

@@ -1,40 +1,40 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { challengeSecret } from "./env";
 
 /**
- * JS-challenge token: issued inside the interstitial page, must come back
- * (within TTL, from the same IP, for the same code) before a click counts.
- * Anything that can't execute JavaScript never completes the round-trip.
+ * JS-challenge token, second generation:
+ *  - a random nonce is persisted server-side (see services/challenges.ts) and
+ *    consumed atomically, so a token counts at most once;
+ *  - the nonce is HMAC-signed (dedicated CHALLENGE_SECRET) and bound to the
+ *    tracking code + IP hash, so garbage tokens are rejected before any DB work.
+ * Neither the nonce nor the signature reveals anything about the visitor.
  */
 
-const TTL_MS = 120_000;
-
-function secret(): string {
-  return process.env.SESSION_SECRET ?? "dev-secret-change-in-production";
-}
+export const CHALLENGE_TTL_MS = 120_000;
 
 function sign(payload: string): string {
-  return createHmac("sha256", `challenge:${secret()}`).update(payload).digest("base64url");
+  return createHmac("sha256", challengeSecret()).update(payload).digest("base64url");
 }
 
-export function issueChallengeToken(code: string, ipHash: string, nowMs = Date.now()): string {
-  const payload = `${code}.${ipHash}.${nowMs}`;
-  return `${nowMs}.${sign(payload)}`;
+export function newChallengeNonce(): string {
+  return randomBytes(16).toString("hex");
 }
 
-export function verifyChallengeToken(
-  token: string,
-  code: string,
-  ipHash: string,
-  nowMs = Date.now()
-): boolean {
+export function signChallenge(nonce: string, code: string, ipHash: string): string {
+  return `${nonce}.${sign(`${nonce}.${code}.${ipHash}`)}`;
+}
+
+/** Returns the nonce when the signature is valid for this code+IP, else null. */
+export function parseChallengeToken(token: string, code: string, ipHash: string): string | null {
   const dot = token.indexOf(".");
-  if (dot <= 0) return false;
-  const ts = Number(token.slice(0, dot));
+  if (dot !== 32) return null;
+  const nonce = token.slice(0, dot);
+  if (!/^[a-f0-9]{32}$/.test(nonce)) return null;
   const sig = token.slice(dot + 1);
-  if (!Number.isFinite(ts)) return false;
-  if (nowMs - ts > TTL_MS || ts - nowMs > 5_000) return false;
-  const expected = sign(`${code}.${ipHash}.${ts}`);
+  if (sig.length < 40 || sig.length > 64) return null;
+  const expected = sign(`${nonce}.${code}.${ipHash}`);
   const a = Buffer.from(sig);
   const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  return nonce;
 }

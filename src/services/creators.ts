@@ -1,8 +1,10 @@
 import { id, now, one, q, run, tx } from "@/lib/db";
 import { hashPassword } from "@/lib/password";
 import type { Category, CreatorProfile, User } from "@/lib/types";
-import { DomainError } from "./campaigns";
+import { DomainError } from "./errors";
+import { notify } from "./notifications";
 import { logAdminAction } from "./adminActions";
+import { recomputeAfterEligibilityChange } from "./results";
 
 export interface RegisterInput {
   name: string;
@@ -26,7 +28,7 @@ export async function registerCreator(input: RegisterInput): Promise<string> {
   if (!USERNAME_RE.test(username))
     throw new DomainError("اسم المستخدم يجب أن يكون 3-30 حرفًا إنجليزيًا أو أرقامًا أو _ .");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new DomainError("البريد الإلكتروني غير صالح");
-  if (input.password.length < 8) throw new DomainError("كلمة المرور 8 أحرف على الأقل");
+  if (input.password.length < 10) throw new DomainError("كلمة المرور 10 أحرف على الأقل");
   if (await one("SELECT 1 FROM users WHERE email = ?", email)) throw new DomainError("البريد مسجل مسبقًا");
   if (await one("SELECT 1 FROM creator_profiles WHERE username = ?", username))
     throw new DomainError("اسم المستخدم محجوز");
@@ -71,6 +73,8 @@ export async function listCategories(): Promise<Category[]> {
 export interface CreatorRow extends CreatorProfile {
   email: string;
   status: string;
+  participation_status: string;
+  approved: number;
   campaigns_count: number;
   qualified_total: number;
   wins: number;
@@ -82,7 +86,7 @@ export async function listCreators(filters?: {
   categoryId?: string;
   minFollowers?: number;
 }): Promise<CreatorRow[]> {
-  const where: string[] = ["u.role = 'creator'"];
+  const where: string[] = ["u.role = 'creator'", "u.id <> 'system'"];
   const params: (string | number)[] = [];
   if (filters?.search) {
     where.push("(cp.username LIKE ? OR cp.name LIKE ? OR u.email LIKE ?)");
@@ -98,7 +102,7 @@ export async function listCreators(filters?: {
     params.push(filters.minFollowers);
   }
   return q<CreatorRow>(
-    `SELECT cp.*, u.email, u.status, cat.name_ar AS category_name,
+    `SELECT cp.*, u.email, u.status, u.participation_status, u.approved, cat.name_ar AS category_name,
        (SELECT COUNT(*) FROM campaign_participants p WHERE p.user_id = u.id) AS campaigns_count,
        (SELECT COALESCE(SUM(p.qualified_count),0) FROM campaign_participants p WHERE p.user_id = u.id) AS qualified_total,
        (SELECT COUNT(*) FROM campaign_participants p WHERE p.user_id = u.id AND p.is_winner = 1) AS wins
@@ -113,7 +117,7 @@ export async function listCreators(filters?: {
 
 export async function getCreatorDetail(userId: string) {
   const creator = await one<CreatorRow>(
-    `SELECT cp.*, u.email, u.status, cat.name_ar AS category_name,
+    `SELECT cp.*, u.email, u.status, u.participation_status, u.approved, cat.name_ar AS category_name,
        (SELECT COUNT(*) FROM campaign_participants p WHERE p.user_id = u.id) AS campaigns_count,
        (SELECT COALESCE(SUM(p.qualified_count),0) FROM campaign_participants p WHERE p.user_id = u.id) AS qualified_total,
        (SELECT COUNT(*) FROM campaign_participants p WHERE p.user_id = u.id AND p.is_winner = 1) AS wins
@@ -164,14 +168,40 @@ export async function setUserStatus(
   const user = await one<User>("SELECT * FROM users WHERE id = ?", userId);
   if (!user) throw new DomainError("المستخدم غير موجود");
   if (user.role === "admin") throw new DomainError("لا يمكن تعطيل حساب Admin");
-  await run("UPDATE users SET status = ? WHERE id = ?", status, userId);
-  await logAdminAction(
-    adminId,
-    status === "disabled" ? "user_disable" : "user_enable",
-    "user",
-    userId,
-    reason
-  );
+  const action = status === "disabled" ? "user_disable" : "user_enable";
+  await tx(async () => {
+    await run("UPDATE users SET status = ? WHERE id = ?", status, userId);
+    await logAdminAction(adminId, action, "user", userId, reason);
+    await recomputeAfterEligibilityChange(userId, adminId, `${action}: ${reason}`);
+  });
+}
+
+/** Login stays allowed; scoring and prizes stop until lifted. Logged. */
+export async function setParticipationStatus(
+  userId: string,
+  status: "active" | "suspended",
+  adminId: string,
+  reason: string
+) {
+  const user = await one<User>("SELECT * FROM users WHERE id = ?", userId);
+  if (!user) throw new DomainError("المستخدم غير موجود");
+  if (user.role === "admin") throw new DomainError("لا ينطبق على حساب Admin");
+  const action = status === "suspended" ? "participation_suspend" : "participation_resume";
+  await tx(async () => {
+    await run("UPDATE users SET participation_status = ? WHERE id = ?", status, userId);
+    await logAdminAction(adminId, action, "user", userId, reason);
+    await recomputeAfterEligibilityChange(userId, adminId, `${action}: ${reason}`);
+  });
+}
+
+/** Registration approval (REGISTRATION_MODE=pending_approval). Logged; the creator is notified. */
+export async function approveCreator(userId: string, adminId: string) {
+  const user = await one<User>("SELECT * FROM users WHERE id = ?", userId);
+  if (!user) throw new DomainError("المستخدم غير موجود");
+  if (Number(user.approved) === 1) return;
+  await run("UPDATE users SET approved = 1 WHERE id = ?", userId);
+  await logAdminAction(adminId, "creator_approve", "user", userId);
+  await notify(userId, "account_approved", "✅ تم اعتماد حسابك", "يمكنك الآن الانضمام للتحديات ومشاركة رابطك.", null, `account_approved:${userId}`);
 }
 
 export interface CreatorHomeStats {

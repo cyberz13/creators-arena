@@ -9,6 +9,11 @@
  */
 import { q, one } from "../src/lib/db";
 import { reviewClick } from "../src/services/tracking";
+// Live-database guard (see scripts/lib/prod-guard.mjs): explicit acknowledgement required.
+if (!process.env.DATABASE_URL) { console.error("refusing to run: set DATABASE_URL in the shell for the target database"); process.exit(2); }
+if (process.env.CONFIRM_PROD_ACCESS !== "I_UNDERSTAND") { console.error("refusing to run: this script talks to a live database. Set CONFIRM_PROD_ACCESS=I_UNDERSTAND to proceed."); process.exit(2); }
+if (process.argv.includes("--apply") && process.env.CONFIRM_PROD_WRITE !== "I_UNDERSTAND") { console.error("refusing to run: --apply WRITES to a live database. Set CONFIRM_PROD_WRITE=I_UNDERSTAND to proceed."); process.exit(2); }
+
 
 const WINDOW = 86_400_000;
 const APPLY = process.argv.includes("--apply");

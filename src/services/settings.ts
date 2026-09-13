@@ -13,6 +13,9 @@ export const DEFAULT_SETTINGS = {
   max_devices_per_ip_24h: 5,
   // 1 = send clicks from VPN/proxy/Tor/datacenter IPs to pending_review.
   ip_intel_enabled: 1,
+  // 1 = a click whose network verdict has not arrived yet waits in pending_review
+  // (auto-qualified later when the verdict is clean); 0 = qualify immediately.
+  ip_unverified_action: 1,
 } as const;
 
 export type SettingKey = keyof typeof DEFAULT_SETTINGS;
@@ -38,5 +41,6 @@ export async function getAllSettings(): Promise<Record<SettingKey, number>> {
     review_threshold_24h: await getSetting("review_threshold_24h"),
     max_devices_per_ip_24h: await getSetting("max_devices_per_ip_24h"),
     ip_intel_enabled: await getSetting("ip_intel_enabled"),
+    ip_unverified_action: await getSetting("ip_unverified_action"),
   };
 }

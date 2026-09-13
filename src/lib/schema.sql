@@ -7,6 +7,15 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'creator' CHECK (role IN ('admin','creator')),
   status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+  -- competition eligibility is separate from login: 'suspended' can log in but never scores
+  participation_status TEXT NOT NULL DEFAULT 'active' CHECK (participation_status IN ('active','suspended')),
+  -- registration approval (REGISTRATION_MODE=pending_approval): 0 = cannot join campaigns yet
+  approved      INTEGER NOT NULL DEFAULT 1,
+  -- e-mail ownership (existing accounts are grandfathered as verified)
+  email_verified INTEGER NOT NULL DEFAULT 1,
+  -- admin MFA (TOTP); secret is AES-256-GCM encrypted with MFA_ENCRYPTION_KEY
+  mfa_enabled    INTEGER NOT NULL DEFAULT 0,
+  mfa_secret_enc TEXT,
   created_at    INTEGER NOT NULL
 );
 
@@ -51,7 +60,12 @@ CREATE TABLE IF NOT EXISTS campaigns (
   created_at     INTEGER NOT NULL,
   launched_at    INTEGER,
   finalized_at   INTEGER,
-  report_token   TEXT
+  report_token   TEXT,
+  report_token_expires_at INTEGER,
+  report_views   INTEGER NOT NULL DEFAULT 0,
+  report_last_viewed_at INTEGER,
+  -- results lifecycle: open (running) → provisional (ended, under review) → final (confirmed)
+  results_status TEXT NOT NULL DEFAULT 'open' CHECK (results_status IN ('open','provisional','final'))
 );
 CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status);
 CREATE INDEX IF NOT EXISTS idx_campaigns_report ON campaigns(report_token);
@@ -78,6 +92,9 @@ CREATE TABLE IF NOT EXISTS campaign_participants (
   last_qualified_at INTEGER,
   final_rank        INTEGER,
   is_winner         INTEGER NOT NULL DEFAULT 0,
+  -- per-campaign exclusion by the admin (logged); excluded participants never rank or win
+  excluded          INTEGER NOT NULL DEFAULT 0,
+  excluded_reason   TEXT,
   UNIQUE (campaign_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_participants_campaign ON campaign_participants(campaign_id);
@@ -171,9 +188,12 @@ CREATE TABLE IF NOT EXISTS notifications (
   body        TEXT NOT NULL DEFAULT '',
   campaign_id TEXT REFERENCES campaigns(id) ON DELETE CASCADE,
   read        INTEGER NOT NULL DEFAULT 0,
+  -- idempotency key for notifications produced by retried/concurrent processes
+  dedupe_key  TEXT,
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe ON notifications(dedupe_key);
 
 CREATE TABLE IF NOT EXISTS admin_actions (
   id          TEXT PRIMARY KEY,
@@ -190,3 +210,84 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- One-time JS-challenge nonces for /go/:code (consumed atomically; purged after an hour).
+CREATE TABLE IF NOT EXISTS challenges (
+  id          TEXT PRIMARY KEY,
+  code        TEXT NOT NULL,
+  ip_hash     TEXT NOT NULL,
+  visitor_id  TEXT NOT NULL DEFAULT '',
+  issued_at   INTEGER NOT NULL,
+  consumed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_challenges_issued ON challenges(issued_at);
+
+-- Server-side sessions: the cookie holds a random token, only its SHA-256 is stored.
+CREATE TABLE IF NOT EXISTS sessions (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash   TEXT NOT NULL UNIQUE,
+  stage        TEXT NOT NULL DEFAULT 'full' CHECK (stage IN ('full','mfa_pending')),
+  created_at   INTEGER NOT NULL,
+  expires_at   INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  revoked_at   INTEGER,
+  -- set when this very session passed TOTP (or completed enrolment); admin access requires it
+  mfa_verified_at INTEGER,
+  ip_hash      TEXT,
+  user_agent   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+-- Fixed-window rate limiter shared by all instances (atomic upsert).
+CREATE TABLE IF NOT EXISTS rate_limits (
+  key          TEXT PRIMARY KEY,
+  count        INTEGER NOT NULL,
+  window_start INTEGER NOT NULL
+);
+
+-- One-time tokens for e-mail verification and password reset (hash only).
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK (kind IN ('verify_email','reset_password')),
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at INTEGER NOT NULL,
+  used_at    INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id, kind);
+
+-- Outbound mail log / dev outbox (provider "log" keeps the message here only).
+CREATE TABLE IF NOT EXISTS mail_outbox (
+  id         TEXT PRIMARY KEY,
+  to_email   TEXT NOT NULL,
+  subject    TEXT NOT NULL,
+  body       TEXT NOT NULL,
+  provider   TEXT NOT NULL,
+  status     TEXT NOT NULL CHECK (status IN ('queued','sent','failed')),
+  error      TEXT,
+  created_at INTEGER NOT NULL,
+  sent_at    INTEGER
+);
+
+-- MFA recovery codes (hash only, single use).
+CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash  TEXT NOT NULL UNIQUE,
+  used_at    INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_codes_user ON mfa_recovery_codes(user_id);
+
+-- Idempotency ledger for transactions whose commit result may be lost in
+-- transit (timeouts / dropped connections): a retry with the same key replays
+-- the stored result instead of re-executing the writes.
+CREATE TABLE IF NOT EXISTS tx_ledger (
+  key        TEXT PRIMARY KEY,
+  result     TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tx_ledger_created ON tx_ledger(created_at);

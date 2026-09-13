@@ -3,8 +3,10 @@
  * Read-only. Usage: DATABASE_URL=... node scripts/audit-clicks.mjs
  */
 import postgres from "postgres";
+import { requireProdAccess } from "./lib/prod-guard.mjs";
+const __dbUrl = requireProdAccess({ write: false });
 
-const sql = postgres(process.env.DATABASE_URL, { ssl: "require", max: 1, prepare: false });
+const sql = postgres(__dbUrl, { ssl: "require", max: 1, prepare: false });
 const u = (q, p = []) => sql.unsafe(q, p);
 
 console.log("═══ 1) نظرة عامة على النقرات لكل صانع ═══");

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { listActiveCampaigns, type CampaignWithStats } from "@/services/campaigns";
-import { getLeaderboard } from "@/services/leaderboard";
+import { getLeaderboard, toPublicBoard } from "@/services/leaderboard";
 import { publicStats, topCreators } from "@/services/analytics";
 import { LiveBoard } from "@/components/landing/live-board";
 import { SpotCard } from "@/components/landing/spot-card";
@@ -13,7 +13,7 @@ const STEPS = [
   { n: "01", title: "انضم للتحدي", desc: "سجّل كصانع محتوى واختر الحملة الأقرب لجمهورك." },
   { n: "02", title: "خُذ رابطك", desc: "لكل حملة رابط تتبّع فريد باسمك وحدك." },
   { n: "03", title: "انشره بأسلوبك", desc: "تيك توك، إنستقرام، سناب — أينما كان جمهورك." },
-  { n: "04", title: "تابع ترتيبك", desc: "لوحة متصدرين حيّة تحسب الزيارات الحقيقية فقط." },
+  { n: "04", title: "تابع ترتيبك", desc: "لوحة متصدرين حيّة تحسب الزيارات التي تجتاز الفلاتر فقط." },
   { n: "05", title: "تصدّر واربح", desc: "صاحب أكبر عدد زيارات مؤهّلة يأخذ الجائزة." },
 ];
 
@@ -26,7 +26,7 @@ const QUOTES = [
 const FAQS = [
   { q: "هل التسجيل مجاني؟", a: "نعم، الانضمام والمشاركة في التحديات مجانيان تماماً. لا عمولة على جوائزك." },
   { q: "كم عدد المتابعين المطلوب؟", a: "لا يوجد حد أدنى صارم. نراجع نسبة التفاعل وجودة الجمهور أكثر من الرقم نفسه." },
-  { q: "كيف تُحسب الزيارة المؤهّلة؟", a: "زيارة من جهاز حقيقي عبر رابطك الخاص. الزيارات المكررة من نفس المصدر والنقرات الآلية تُستبعد تلقائياً بنظام كشف التلاعب." },
+  { q: "كيف تُحسب الزيارة المؤهّلة؟", a: "زيارة عبر رابطك الخاص اجتازت فلاتر المنصة ولم تُصنّف كمكررة أو آلية. الزيارات المكررة من نفس الجلسة أو الجهاز، والنقرات الآلية، والشبكات المشبوهة تُستبعد أو تُحال للمراجعة." },
   { q: "متى تُصرف الجوائز؟", a: "خلال سبعة أيام عمل من إعلان النتائج النهائية للتحدي." },
   { q: "هل أشارك في أكثر من تحدٍّ؟", a: "نعم، يمكنك المنافسة في عدة تحديات في وقت واحد، وترتيب الموسم يجمع نتائجك كلها." },
 ];
@@ -57,7 +57,7 @@ export default async function HomePage() {
   ]);
   const featured = [...active].sort((a, b) => b.prize_total - a.prize_total).slice(0, 3);
   const liveCampaign = active[0] ?? null;
-  const liveBoard = liveCampaign ? await getLeaderboard(liveCampaign.id, 4) : [];
+  const liveBoard = liveCampaign ? toPublicBoard(await getLeaderboard(liveCampaign.id, 4)) : [];
 
   return (
     <div>

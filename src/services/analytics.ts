@@ -1,4 +1,5 @@
 import { one, q } from "@/lib/db";
+import { dayKey } from "@/lib/utils";
 
 export interface AdminOverview {
   creators: number;
@@ -63,7 +64,7 @@ export interface DailyPoint {
 }
 
 export async function dailyVisits(campaignId?: string, days = 30): Promise<DailyPoint[]> {
-  const sinceDay = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  const sinceDay = dayKey(Date.now() - days * 86_400_000);
   if (campaignId) {
     return q<DailyPoint>(
       `SELECT day, SUM(clicks) AS clicks, SUM(qualified) AS qualified, SUM(rejected) AS rejected

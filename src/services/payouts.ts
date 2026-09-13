@@ -1,8 +1,9 @@
-import { now, one, q, run } from "@/lib/db";
+import { execute, now, one, q, tx, txSerializeOn } from "@/lib/db";
 import type { Payout, PayoutStatus } from "@/lib/types";
 import { logAdminAction } from "./adminActions";
 import { notify } from "./notifications";
-import { DomainError } from "./campaigns";
+import { DomainError } from "./errors";
+import { campaignLockKey } from "./results";
 
 export interface PayoutRow extends Payout {
   username: string;
@@ -24,6 +25,7 @@ export async function listPayouts(status?: PayoutStatus): Promise<PayoutRow[]> {
   );
 }
 
+/** `paid` is terminal: money that left the account is never "un-paid" by a status flip. */
 const ALLOWED: Record<PayoutStatus, PayoutStatus[]> = {
   pending: ["approved", "rejected"],
   approved: ["paid", "rejected"],
@@ -31,41 +33,107 @@ const ALLOWED: Record<PayoutStatus, PayoutStatus[]> = {
   rejected: ["pending"],
 };
 
+export interface PayoutUpdateOptions {
+  /** Set by the action layer after the admin re-entered their password (required for `paid`). */
+  reauthenticated?: boolean;
+}
+
+/**
+ * Atomic state transition:
+ *  - read + validate inside the transaction, behind the payout's advisory lock;
+ *  - conditional UPDATE on the previous status with an affected-row check, so
+ *    two admins clicking at once cannot both "win";
+ *  - audit row and notification are written in the same transaction (dedupe
+ *    keys keep a retried request from double-notifying);
+ *  - approving/paying requires confirmed (final) results AND a beneficiary
+ *    who is still eligible (active account, active participation, not
+ *    excluded, still the recorded winner of that rank);
+ *  - lock order is campaign → payout everywhere, so a results correction or
+ *    an eligibility change (which take the campaign lock) can never interleave
+ *    with a payout transition.
+ */
 export async function updatePayoutStatus(
   payoutId: string,
   newStatus: PayoutStatus,
   adminId: string,
-  reason = ""
+  reason = "",
+  opts: PayoutUpdateOptions = {}
 ) {
-  const payout = await one<Payout>("SELECT * FROM payouts WHERE id = ?", payoutId);
-  if (!payout) throw new DomainError("سجل الجائزة غير موجود");
-  if (!ALLOWED[payout.status].includes(newStatus))
-    throw new DomainError(`لا يمكن الانتقال من ${payout.status} إلى ${newStatus}`);
-  await run(
-    "UPDATE payouts SET status = ?, updated_by = ?, updated_at = ? WHERE id = ?",
-    newStatus,
-    adminId,
-    now(),
-    payoutId
-  );
-  await logAdminAction(adminId, `payout_${newStatus}`, "payout", payoutId, reason);
-  if (newStatus === "approved") {
-    await notify(
-      payout.user_id,
-      "prize_approved",
-      "✅ تم اعتماد جائزتك",
-      `جائزة بقيمة ${payout.amount} ريال قيد الصرف.`,
-      payout.campaign_id
-    );
-  } else if (newStatus === "paid") {
-    await notify(
-      payout.user_id,
-      "prize_paid",
-      "💰 تم دفع جائزتك",
-      `تم تحويل ${payout.amount} ريال لك. مبروك!`,
-      payout.campaign_id
-    );
+  if (newStatus === "paid" && !opts.reauthenticated) {
+    throw new DomainError("تأكيد الدفع يتطلب إعادة إدخال كلمة مرور الأدمن");
   }
+  await tx(async () => {
+    const ref = await one<Payout>("SELECT * FROM payouts WHERE id = ?", payoutId);
+    if (!ref) throw new DomainError("سجل الجائزة غير موجود");
+    await txSerializeOn(campaignLockKey(ref.campaign_id));
+    await txSerializeOn(`payout:${payoutId}`);
+    // Re-read under the locks (a recompute may have reassigned or removed it).
+    const payout = await one<Payout>("SELECT * FROM payouts WHERE id = ?", payoutId);
+    if (!payout) throw new DomainError("سجل الجائزة غير موجود");
+    if (!ALLOWED[payout.status].includes(newStatus))
+      throw new DomainError(`لا يمكن الانتقال من ${payout.status} إلى ${newStatus}`);
+    if (newStatus === "approved" || newStatus === "paid") {
+      const c = await one<{ results_status: string }>(
+        "SELECT results_status FROM campaigns WHERE id = ?",
+        payout.campaign_id
+      );
+      if (c?.results_status !== "final")
+        throw new DomainError("ثبّت نتائج الحملة أولًا قبل اعتماد الجوائز أو صرفها");
+      if (!(await beneficiaryEligible(payout)))
+        throw new DomainError(
+          "المستفيد غير مؤهل حاليًا (حساب معطّل، مشاركة موقوفة، مستبعد، أو لم يعد فائزًا بهذا المركز) — صحّح النتائج أولًا"
+        );
+    }
+    const changed = await execute(
+      "UPDATE payouts SET status = ?, updated_by = ?, updated_at = ? WHERE id = ? AND status = ?",
+      newStatus,
+      adminId,
+      now(),
+      payoutId,
+      payout.status
+    );
+    if (changed !== 1) throw new DomainError("تغيرت حالة الجائزة أثناء المعالجة — أعد التحميل");
+    await logAdminAction(adminId, `payout_${newStatus}`, "payout", payoutId, reason);
+    if (newStatus === "approved") {
+      await notify(
+        payout.user_id,
+        "prize_approved",
+        "✅ تم اعتماد جائزتك",
+        `جائزة بقيمة ${payout.amount} ريال قيد الصرف.`,
+        payout.campaign_id,
+        `payout_approved:${payoutId}`
+      );
+    } else if (newStatus === "paid") {
+      await notify(
+        payout.user_id,
+        "prize_paid",
+        "💰 تم دفع جائزتك",
+        `تم تحويل ${payout.amount} ريال لك. مبروك!`,
+        payout.campaign_id,
+        `payout_paid:${payoutId}`
+      );
+    }
+  });
+}
+
+/** Money moves only to a beneficiary who is eligible RIGHT NOW and still holds the rank. */
+export async function beneficiaryEligible(payout: Pick<Payout, "user_id" | "campaign_id" | "prize_rank">): Promise<boolean> {
+  const row = await one<{ status: string; participation_status: string; excluded: number; is_winner: number; final_rank: number | null }>(
+    `SELECT u.status, u.participation_status, p.excluded, p.is_winner, p.final_rank
+     FROM users u
+     JOIN campaign_participants p ON p.user_id = u.id AND p.campaign_id = ?
+     WHERE u.id = ?`,
+    payout.campaign_id,
+    payout.user_id
+  );
+  return (
+    !!row &&
+    row.status === "active" &&
+    row.participation_status === "active" &&
+    Number(row.excluded) === 0 &&
+    Number(row.is_winner) === 1 &&
+    Number(row.final_rank) === Number(payout.prize_rank)
+  );
 }
 
 export async function listMyPrizes(userId: string): Promise<PayoutRow[]> {

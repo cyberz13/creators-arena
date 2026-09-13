@@ -34,6 +34,11 @@ const FIELDS = [
     label: "فحص الشبكات المشبوهة (VPN / مراكز بيانات)",
     hint: "1 = زيارات VPN والبروكسي ومراكز البيانات تذهب للمراجعة، 0 = إيقاف الفحص",
   },
+  {
+    key: "ip_unverified_action",
+    label: "الزيارة قبل وصول نتيجة فحص الشبكة",
+    hint: "1 = تُحجز قيد المراجعة وتُعتمد تلقائيًا عند وصول نتيجة نظيفة، 0 = تُحتسب فورًا",
+  },
 ] as const;
 
 export function SettingsForm({ settings }: { settings: Record<string, number> }) {

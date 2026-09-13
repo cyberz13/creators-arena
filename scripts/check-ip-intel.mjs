@@ -1,6 +1,8 @@
 // Diagnostic: list cached network-intel rows (run with PGURL env for prod).
 import postgres from "postgres";
-const sql = postgres(process.env.PGURL, { ssl: "require", max: 1, prepare: false });
+import { requireProdAccess } from "./lib/prod-guard.mjs";
+const __dbUrl = requireProdAccess({ write: false });
+const sql = postgres(__dbUrl, { ssl: "require", max: 1, prepare: false });
 const rows = await sql.unsafe(
   "SELECT ip_hash, risky, flags, asn_org, country, city, checked_at FROM ip_intel ORDER BY checked_at DESC LIMIT 10"
 );

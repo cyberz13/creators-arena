@@ -7,7 +7,7 @@ import {
   getPrizes,
   getTrackingLink,
 } from "@/services/campaigns";
-import { getLeaderboard } from "@/services/leaderboard";
+import { getLeaderboard, toPublicBoard } from "@/services/leaderboard";
 import { listPayouts } from "@/services/payouts";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,7 +32,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
 
   const user = await getSessionUser();
   const prizes = await getPrizes(id);
-  const board = await getLeaderboard(id);
+  const board = toPublicBoard(await getLeaderboard(id));
   const myLink = user?.role === "creator" ? await getTrackingLink(id, user.id) : undefined;
   const winners =
     campaign.status === "ended" ? (await listPayouts()).filter((p) => p.campaign_id === id) : [];
@@ -152,7 +152,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
               <CopyLink url={`${origin}/go/${myLink.code}`} title={campaign.title} />
               <div className="mt-3"><LicenseNotice /></div>
               <p className="mt-3 text-xs text-zinc-500">
-                كل زيارة حقيقية عبر رابطك تُحتسب لك في الترتيب. الزيارات المكررة والوهمية لا تُحتسب.
+                تُحتسب لك كل زيارة عبر رابطك تجتاز فلاتر المنصة. الزيارات المكررة والآلية والمشبوهة لا تُحتسب أو تُحال للمراجعة.
               </p>
             </div>
           ) : (
@@ -195,7 +195,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
         <Leaderboard
           campaignId={id}
           initial={board}
-          myUserId={user?.role === "creator" ? user.id : null}
+          myUsername={user?.role === "creator" ? (user.profile?.username ?? null) : null}
           live={campaign.status === "active"}
         />
       </div>

@@ -1,6 +1,8 @@
 // Diagnostic: live connections + long-running queries on Supabase (PGURL env).
 import postgres from "postgres";
-const sql = postgres(process.env.PGURL, { ssl: "require", max: 1, prepare: false });
+import { requireProdAccess } from "./lib/prod-guard.mjs";
+const __dbUrl = requireProdAccess({ write: false });
+const sql = postgres(__dbUrl, { ssl: "require", max: 1, prepare: false });
 const acts = await sql.unsafe(
   `SELECT pid, state, wait_event_type, wait_event,
           EXTRACT(EPOCH FROM (now() - query_start))::int AS secs,

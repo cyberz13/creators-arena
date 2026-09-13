@@ -4,7 +4,7 @@ import { formatDate, formatNumber } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 export const metadata = {
-  title: "تقرير الوصول الموثق",
+  title: "تقرير الوصول",
   robots: { index: false, follow: false },
 };
 
@@ -53,10 +53,10 @@ export default async function StoreReportPage({ params }: { params: Promise<{ to
   const peakHour = report.hours.indexOf(Math.max(...report.hours));
 
   const kpis: [string, string, string][] = [
-    ["زيارة موثقة", formatNumber(report.qualified), "عملاء حقيقيون وصلوا لمتجرك"],
-    ["جهاز فريد", formatNumber(report.uniqueDevices), "أشخاص مختلفون فعليًا"],
+    ["زيارة اجتازت الفلاتر", formatNumber(report.qualified), "لم تُصنّف كمكررة أو آلية"],
+    ["بصمة جهاز مميزة", formatNumber(report.uniqueDevices), "تقدير لعدد الأجهزة، لا لعدد الأشخاص"],
     ["صانع محتوى", formatNumber(report.creators), "يروجون لمتجرك في الحملة"],
-    ["محاولة مشبوهة صُدَّت", formatNumber(report.blocked), "زيارات مزيفة لم نحسبها لك"],
+    ["زيارة مستبعدة", formatNumber(report.blocked), "مكررة أو آلية أو مشبوهة — لم تُحتسب"],
   ];
 
   return (
@@ -66,7 +66,7 @@ export default async function StoreReportPage({ params }: { params: Promise<{ to
         <p className="text-sm font-bold tracking-[0.2em] text-zinc-400">
           CREATORS <span className="text-brand-400">ARENA</span>
         </p>
-        <h1 className="mt-3 text-2xl font-bold text-white sm:text-3xl">تقرير الوصول الموثق</h1>
+        <h1 className="mt-3 text-2xl font-bold text-white sm:text-3xl">تقرير الوصول</h1>
         <p className="mt-2 text-zinc-300">
           {campaign.store_name} — {campaign.title}
         </p>
@@ -89,7 +89,7 @@ export default async function StoreReportPage({ params }: { params: Promise<{ to
 
       {/* Daily qualified visits */}
       <section className="mt-8 rounded-2xl border border-white/[0.08] bg-surface p-5">
-        <h2 className="font-bold text-white">الزيارات الموثقة يوميًا</h2>
+        <h2 className="font-bold text-white">الزيارات المحتسبة يوميًا</h2>
         {daily.length === 0 ? (
           <p className="py-6 text-center text-sm text-zinc-500">لا بيانات بعد</p>
         ) : (
@@ -197,9 +197,9 @@ export default async function StoreReportPage({ params }: { params: Promise<{ to
       )}
 
       <footer className="mt-10 border-t border-white/10 pt-5 text-xs leading-relaxed text-zinc-500">
-        كل زيارة في هذا التقرير اجتازت تحققًا متعدد الطبقات (بشرية المتصفح، بصمة جهاز فريدة، فحص
-        الشبكات المشبوهة) — الزيارات المكررة والمزيفة تُستبعد ولا تُحتسب. أُنشئ التقرير آليًا من
-        بيانات المنصة الحية بتاريخ {formatDate(Date.now())}.
+        الأرقام هنا هي زيارات اجتازت فلاتر المنصة (تحدي المتصفح، تكرار الجلسة والجهاز، فحص الشبكة)
+        ولم تُصنّف كمكررة أو آلية. الزيارة تعني تحويلًا إلى رابط متجرك، ولا تثبت بذاتها اكتمال تحميل
+        الصفحة أو حدوث شراء. أُنشئ التقرير آليًا من بيانات المنصة بتاريخ {formatDate(report.generatedAt)} (بتوقيت الرياض).
       </footer>
     </main>
   );

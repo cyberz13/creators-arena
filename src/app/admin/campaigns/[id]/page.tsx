@@ -4,16 +4,17 @@ import { getCampaignWithStats, getPrizes } from "@/services/campaigns";
 import { getLeaderboard } from "@/services/leaderboard";
 import { dailyVisits, trafficSources } from "@/services/analytics";
 import { listPayouts } from "@/services/payouts";
-import { q } from "@/lib/db";
+import { one, q } from "@/lib/db";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CampaignStatusBadge, PAYOUT_LABELS } from "@/components/campaign-status";
 import { Badge } from "@/components/ui/badge";
 import { DailyVisitsChart, SourcesChart } from "@/components/charts";
 import { ManageButtons } from "./manage-buttons";
+import { ExcludeButton, ResultsButtons } from "./results-buttons";
 import { ReportLink } from "./report-link";
 import { ensureReportToken } from "@/services/store-report";
 import { requestOrigin } from "@/lib/origin";
-import { formatDate, formatNumber, formatSAR } from "@/lib/utils";
+import { daysUntil, formatDate, formatNumber, formatSAR } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,8 @@ interface PerfRow {
   rejected_count: number;
   pending_count: number;
   joined_at: number;
+  excluded: number;
+  excluded_reason: string | null;
 }
 
 export default async function AdminCampaignDetail({ params }: { params: Promise<{ id: string }> }) {
@@ -40,12 +43,16 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
   const payouts = (await listPayouts()).filter((p) => p.campaign_id === id);
   const perf = await q<PerfRow>(
     `SELECT p.user_id, cp.username, cp.name, p.total_clicks, p.qualified_count,
-            p.rejected_count, p.pending_count, p.joined_at
+            p.rejected_count, p.pending_count, p.joined_at, p.excluded, p.excluded_reason
      FROM campaign_participants p JOIN creator_profiles cp ON cp.user_id = p.user_id
      WHERE p.campaign_id = ? ORDER BY p.qualified_count DESC`,
     id
   );
-  const reportUrl = `${await requestOrigin()}/r/${await ensureReportToken(id)}`;
+  const pendingClicks = Number(
+    (await one<{ n: number }>("SELECT COUNT(*) AS n FROM clicks WHERE campaign_id = ? AND status = 'pending_review'", id))?.n ?? 0
+  );
+  const report = await ensureReportToken(id);
+  const reportUrl = `${await requestOrigin()}/r/${report.token}`;
 
   return (
     <div className="space-y-6">
@@ -54,6 +61,11 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold text-white">{campaign.title}</h1>
             <CampaignStatusBadge status={campaign.status} />
+            {campaign.status === "ended" && (
+              <Badge variant={campaign.results_status === "final" ? "success" : "warning"}>
+                {campaign.results_status === "final" ? "النتائج مثبتة" : "نتائج أولية — بانتظار التثبيت"}
+              </Badge>
+            )}
           </div>
           <p className="mt-1 text-sm text-zinc-400">
             {campaign.store_name} •{" "}
@@ -67,6 +79,9 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
         </div>
         <div className="flex flex-col items-end gap-2">
           <ManageButtons campaignId={id} status={campaign.status} />
+          {campaign.status === "ended" && (
+            <ResultsButtons campaignId={id} resultsStatus={campaign.results_status} pendingClicks={pendingClicks} />
+          )}
           <div className="flex gap-4">
             {campaign.status !== "ended" && campaign.status !== "cancelled" && (
               <Link href={`/admin/campaigns/${id}/edit`} className="text-sm font-semibold text-brand-400 hover:underline">
@@ -80,7 +95,7 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
         </div>
       </div>
 
-      <ReportLink url={reportUrl} />
+      <ReportLink campaignId={id} url={reportUrl} expiresInDays={daysUntil(report.expiresAt)} views={report.views} />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
@@ -162,7 +177,7 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
             <table className="w-full min-w-[640px] text-sm">
               <thead>
                 <tr className="border-b border-white/[0.06] text-xs text-zinc-500">
-                  {["#", "Creator", "مؤهلة", "مرفوضة", "قيد المراجعة", "إجمالي", "نسبة التأهيل"].map((h) => (
+                  {["#", "Creator", "مؤهلة", "مرفوضة", "قيد المراجعة", "إجمالي", "نسبة التأهيل", ""].map((h) => (
                     <th key={h} className="px-4 py-2.5 text-start font-semibold">{h}</th>
                   ))}
                 </tr>
@@ -185,6 +200,12 @@ export default async function AdminCampaignDetail({ params }: { params: Promise<
                     <td className="tabular px-4 py-2.5 text-zinc-400">{formatNumber(p.total_clicks)}</td>
                     <td className="tabular px-4 py-2.5 text-zinc-400">
                       {p.total_clicks > 0 ? `${Math.round((p.qualified_count / p.total_clicks) * 100)}%` : "—"}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {Number(p.excluded) === 1 && (
+                        <span className="me-2 text-xs text-red-400" title={p.excluded_reason ?? ""}>مستبعد</span>
+                      )}
+                      <ExcludeButton campaignId={id} userId={p.user_id} excluded={Number(p.excluded) === 1} />
                     </td>
                   </tr>
                 ))}

@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, verifyPassword } from "@/lib/auth";
+import { one } from "@/lib/db";
 import {
   adminCancelCampaign,
   adminEndCampaign,
@@ -14,11 +15,14 @@ import {
   DomainError,
   type CampaignInput,
 } from "@/services/campaigns";
-import { setUserStatus } from "@/services/creators";
+import { approveCreator, setParticipationStatus, setUserStatus } from "@/services/creators";
 import { updatePayoutStatus } from "@/services/payouts";
 import { reviewClick } from "@/services/tracking";
+import { confirmResults, correctResults, excludeParticipant } from "@/services/results";
 import { setSetting, type SettingKey } from "@/services/settings";
-import type { PayoutStatus } from "@/lib/types";
+import { revokeReportToken, rotateReportToken } from "@/services/store-report";
+import type { PayoutStatus, User } from "@/lib/types";
+import { parseRiyadhLocalInput } from "@/lib/time";
 
 export interface FormState {
   error: string | null;
@@ -44,8 +48,9 @@ function parseCampaignForm(formData: FormData): CampaignInput {
     store_url: String(formData.get("store_url") ?? ""),
     store_logo_url: String(formData.get("store_logo_url") ?? "") || null,
     image_url: String(formData.get("image_url") ?? "") || null,
-    start_at: new Date(String(formData.get("start_at") ?? "")).getTime(),
-    end_at: new Date(String(formData.get("end_at") ?? "")).getTime(),
+    // datetime-local values are Riyadh wall-clock time with an explicit +03:00 offset
+    start_at: parseRiyadhLocalInput(String(formData.get("start_at") ?? "")),
+    end_at: parseRiyadhLocalInput(String(formData.get("end_at") ?? "")),
     prizes,
   };
 }
@@ -121,34 +126,88 @@ async function guarded(fn: (adminId: string) => Promise<unknown>, paths: string[
   return { error: null };
 }
 
+const campaignPaths = (id: string) => [`/admin/campaigns/${id}`, "/admin/campaigns", `/campaigns/${id}`, "/admin/payouts"];
+
 export async function launchCampaignAction(campaignId: string) {
-  return guarded((a) => launchCampaign(campaignId, a), [`/admin/campaigns/${campaignId}`, "/admin/campaigns"]);
+  return guarded((a) => launchCampaign(campaignId, a), campaignPaths(campaignId));
 }
 
 export async function endCampaignAction(campaignId: string, reason: string) {
-  return guarded((a) => adminEndCampaign(campaignId, a, reason), [`/admin/campaigns/${campaignId}`, "/admin/campaigns"]);
+  return guarded((a) => adminEndCampaign(campaignId, a, reason), campaignPaths(campaignId));
 }
 
 export async function cancelCampaignAction(campaignId: string, reason: string) {
-  return guarded((a) => adminCancelCampaign(campaignId, a, reason), [`/admin/campaigns/${campaignId}`, "/admin/campaigns"]);
+  return guarded((a) => adminCancelCampaign(campaignId, a, reason), campaignPaths(campaignId));
 }
 
 export async function extendCampaignAction(campaignId: string, newEndAtIso: string, reason: string) {
-  const ts = new Date(newEndAtIso).getTime();
-  if (!Number.isFinite(ts)) return { error: "تاريخ غير صالح" };
-  return guarded((a) => adminExtendCampaign(campaignId, ts, a, reason), [`/admin/campaigns/${campaignId}`, "/admin/campaigns"]);
+  const ts = parseRiyadhLocalInput(newEndAtIso.trim());
+  if (!Number.isFinite(ts)) return { error: "تاريخ غير صالح (الصيغة: 2026-09-01T20:00 بتوقيت الرياض)" };
+  return guarded((a) => adminExtendCampaign(campaignId, ts, a, reason), campaignPaths(campaignId));
+}
+
+export async function confirmResultsAction(campaignId: string) {
+  return guarded((a) => confirmResults(campaignId, a), campaignPaths(campaignId));
+}
+
+export async function correctResultsAction(campaignId: string, reason: string) {
+  return guarded((a) => correctResults(campaignId, a, reason), campaignPaths(campaignId));
+}
+
+export async function excludeParticipantAction(campaignId: string, userId: string, excluded: boolean, reason: string) {
+  return guarded((a) => excludeParticipant(campaignId, userId, a, reason, excluded), [
+    ...campaignPaths(campaignId),
+    `/admin/creators/${userId}`,
+  ]);
+}
+
+export async function rotateReportTokenAction(campaignId: string) {
+  return guarded((a) => rotateReportToken(campaignId, a), [`/admin/campaigns/${campaignId}`]);
+}
+
+export async function revokeReportTokenAction(campaignId: string, reason: string) {
+  return guarded(async (a) => {
+    await revokeReportToken(campaignId, a);
+    void reason;
+  }, [`/admin/campaigns/${campaignId}`]);
 }
 
 export async function setUserStatusAction(userId: string, status: "active" | "disabled", reason: string) {
   return guarded((a) => setUserStatus(userId, status, a, reason), ["/admin/creators", `/admin/creators/${userId}`]);
 }
 
-export async function updatePayoutAction(payoutId: string, status: PayoutStatus, reason: string) {
-  return guarded((a) => updatePayoutStatus(payoutId, status, a, reason), ["/admin/payouts"]);
+export async function setParticipationStatusAction(userId: string, status: "active" | "suspended", reason: string) {
+  return guarded((a) => setParticipationStatus(userId, status, a, reason), ["/admin/creators", `/admin/creators/${userId}`]);
 }
 
-export async function reviewClickAction(clickId: string, status: "qualified" | "rejected", reason: string) {
-  return guarded((a) => reviewClick(clickId, status, a, reason), ["/admin/clicks"]);
+export async function approveCreatorAction(userId: string) {
+  return guarded((a) => approveCreator(userId, a), ["/admin/creators", `/admin/creators/${userId}`]);
+}
+
+/**
+ * Payout transitions. Marking a prize as PAID is irreversible money movement,
+ * so it requires the admin to re-enter their password in the same request.
+ */
+export async function updatePayoutAction(payoutId: string, status: PayoutStatus, reason: string, password?: string) {
+  const admin = await requireAdmin();
+  let reauthenticated = false;
+  if (status === "paid") {
+    const row = await one<User>("SELECT * FROM users WHERE id = ?", admin.id);
+    if (!row || !password || !(await verifyPassword(password, row.password_hash))) {
+      return { error: "كلمة المرور غير صحيحة — لم يتم تأكيد الدفع" };
+    }
+    reauthenticated = true;
+  }
+  return guarded((a) => updatePayoutStatus(payoutId, status, a, reason, { reauthenticated }), ["/admin/payouts"]);
+}
+
+export async function reviewClickAction(
+  clickId: string,
+  status: "qualified" | "rejected",
+  reason: string,
+  correction = false
+) {
+  return guarded((a) => reviewClick(clickId, status, a, reason, { correction }), ["/admin/clicks", "/admin/campaigns"]);
 }
 
 export async function updateSettingsAction(_prev: FormState, formData: FormData): Promise<FormState> {
@@ -159,6 +218,7 @@ export async function updateSettingsAction(_prev: FormState, formData: FormData)
     "review_threshold_24h",
     "max_devices_per_ip_24h",
     "ip_intel_enabled",
+    "ip_unverified_action",
   ];
   for (const key of keys) {
     const value = Number(formData.get(key));

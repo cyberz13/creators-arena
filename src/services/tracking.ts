@@ -1,4 +1,4 @@
-import { id, one, q, run, tx, txSerializeOn } from "@/lib/db";
+import { execute, id, one, q, run, tx, txSerializeOn } from "@/lib/db";
 import { dayKey } from "@/lib/utils";
 import type { Click, ClickStatus, TrackingLink } from "@/lib/types";
 import { classifyClick, detectSource } from "./fraud";
@@ -6,6 +6,9 @@ import { ensureLifecycle, getCampaign } from "./campaigns";
 import { currentLeader } from "./leaderboard";
 import { notify } from "./notifications";
 import { logAdminAction } from "./adminActions";
+import { DomainError } from "./errors";
+import { campaignLockKey, notifyWinners, recomputeStandings, SYSTEM_ACTOR_ID, ensureSystemActor } from "./results";
+import { getIpIntel } from "./ip-intel";
 
 export interface IncomingClick {
   code: string;
@@ -22,6 +25,43 @@ export interface IncomingClick {
   /** Forensic JSON from the JS challenge (elapsed ms, interaction count, …). */
   signals?: string | null;
   nowMs?: number;
+  /**
+   * Stable key for this exact request (the consumed challenge nonce). Lets the
+   * data layer replay — not re-execute — the click if the commit outcome was
+   * lost in transit. Optional for callers without a nonce (bot short-circuit).
+   */
+  idempotencyKey?: string;
+}
+
+/** Request-time signals persisted with the click so a later re-evaluation sees exactly what the request had. */
+export interface StoredSignals {
+  /** sec-fetch-* headers present on the navigation. */
+  sf?: boolean;
+  /** navigator.webdriver reported by the challenge. */
+  wd?: boolean;
+  [k: string]: unknown;
+}
+
+export function parseSignals(raw: string | null | undefined): StoredSignals {
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as StoredSignals) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Adds request facts without clobbering what the route already stored (e.g. its numeric `wd`). */
+function mergeSignals(raw: string | null | undefined, extra: StoredSignals): string {
+  const base = parseSignals(raw);
+  for (const [k, v] of Object.entries(extra)) if (base[k] === undefined) base[k] = v;
+  return JSON.stringify(base);
+}
+
+/** `wd` may be stored as 1/0 (route) or true/false (services). */
+function truthyFlag(v: unknown): boolean {
+  return v === true || v === 1 || v === "1";
 }
 
 export interface ClickResult {
@@ -29,41 +69,64 @@ export interface ClickResult {
   status: ClickStatus | null; // null when nothing was recorded
 }
 
+interface LinkContext extends TrackingLink {
+  excluded: number;
+  user_status: string;
+  participation_status: string;
+}
+
 /**
- * The full /go/:code pipeline: resolve link → campaign state → fraud verdict
- * → persist click → update counters/daily stats → leaderboard notifications.
- * Returns the store URL to redirect to (or null for unknown codes).
+ * The full /go/:code pipeline: resolve link → (inside one transaction, behind
+ * the campaign's shared lock) re-check campaign state and eligibility → fraud
+ * verdict → persist click → counters/daily stats → rank notifications.
+ * Everything that decides or records the outcome happens in the transaction,
+ * so a concurrent finalization or review can never interleave with it.
  */
 export async function recordClick(input: IncomingClick): Promise<ClickResult> {
   const nowMs = input.nowMs ?? Date.now();
-  const link = await one<TrackingLink>("SELECT * FROM tracking_links WHERE code = ?", input.code);
+  const link = await one<LinkContext>(
+    `SELECT t.*, p.excluded, u.status AS user_status, u.participation_status
+     FROM tracking_links t
+     JOIN campaign_participants p ON p.id = t.participant_id
+     JOIN users u ON u.id = t.user_id
+     WHERE t.code = ?`,
+    input.code
+  );
   if (!link) return { redirectUrl: null, status: null };
 
-  let campaign = (await getCampaign(link.campaign_id))!;
-  campaign = await ensureLifecycle(campaign);
+  const campaignBefore = (await getCampaign(link.campaign_id))!;
+  await ensureLifecycle(campaignBefore);
 
-  // Classify INSIDE the transaction, behind per-key advisory locks:
-  // concurrent clicks from the same ip/session serialize here, so the
-  // dedup check can never race its own write (the leak a production
-  // audit caught: several "qualified" from one IP within one minute).
-  const { verdict, previousLeader } = await tx(async () => {
+  const { verdict, previousLeader, storeUrl } = await tx(async () => {
+    // Shared campaign lock: clicks run concurrently with each other, but a
+    // review/finalization (exclusive) drains them first and blocks new ones.
+    await txSerializeOn(campaignLockKey(link.campaign_id), "shared");
     await txSerializeOn(`click-ip:${link.campaign_id}:${input.ipHash}`);
     await txSerializeOn(`click-sess:${link.campaign_id}:${input.sessionId}`);
     await txSerializeOn(`click-dev:${link.campaign_id}:${input.deviceHash}`);
 
+    const campaign = (await one<{ status: string; store_url: string }>(
+      "SELECT status, store_url FROM campaigns WHERE id = ?",
+      link.campaign_id
+    ))!;
+    const eligible =
+      Number(link.excluded) === 0 && link.user_status === "active" && link.participation_status === "active";
+
     const v =
       campaign.status !== "active"
         ? { status: "rejected" as const, reason: "campaign_inactive" }
-        : await classifyClick({
-            campaignId: link.campaign_id,
-            ipHash: input.ipHash,
-            sessionId: input.sessionId,
-            deviceHash: input.deviceHash,
-            userAgent: input.userAgent,
-            hasSecFetch: input.hasSecFetch ?? true,
-            webdriver: input.webdriver ?? false,
-            nowMs,
-          });
+        : !eligible
+          ? { status: "rejected" as const, reason: "ineligible" }
+          : await classifyClick({
+              campaignId: link.campaign_id,
+              ipHash: input.ipHash,
+              sessionId: input.sessionId,
+              deviceHash: input.deviceHash,
+              userAgent: input.userAgent,
+              hasSecFetch: input.hasSecFetch ?? true,
+              webdriver: input.webdriver ?? false,
+              nowMs,
+            });
 
     const prev = v.status === "qualified" ? await currentLeader(link.campaign_id) : null;
 
@@ -86,18 +149,18 @@ export async function recordClick(input: IncomingClick): Promise<ClickResult> {
       detectSource(input.referer, input.utmSource),
       input.geoCountry ?? null,
       input.geoCity ?? null,
-      input.signals ?? null,
+      // sec-fetch / webdriver are stored with the click: a held click is later
+      // re-evaluated against the SAME request facts, never assumed clean.
+      mergeSignals(input.signals, { sf: input.hasSecFetch ?? true, wd: input.webdriver ?? false }),
       nowMs
     );
     await applyCounterDelta(link, v.status, nowMs, +1);
-    return { verdict: v, previousLeader: prev };
-  });
+    if (v.status === "qualified") await notifyRankChanges(link.campaign_id, link.user_id, prev);
+    return { verdict: v, previousLeader: prev, storeUrl: campaign.store_url };
+  }, { idempotencyKey: input.idempotencyKey ? `click:${input.idempotencyKey}` : undefined });
+  void previousLeader;
 
-  if (verdict.status === "qualified") {
-    await notifyRankChanges(link.campaign_id, link.user_id, previousLeader);
-  }
-
-  return { redirectUrl: campaign.store_url, status: verdict.status };
+  return { redirectUrl: storeUrl, status: verdict.status };
 }
 
 async function applyCounterDelta(
@@ -166,68 +229,246 @@ export interface ClickReviewRow extends Click {
   campaign_title: string;
 }
 
+export interface ReviewPage {
+  rows: ClickReviewRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export async function listClicksForReview(
   status: ClickStatus = "pending_review",
-  limit = 200
-): Promise<ClickReviewRow[]> {
-  return q<ClickReviewRow>(
+  page = 1,
+  pageSize = 100
+): Promise<ReviewPage> {
+  const safePage = Math.max(1, Math.floor(page));
+  const size = Math.min(200, Math.max(10, Math.floor(pageSize)));
+  const total = Number(
+    (await one<{ n: number }>("SELECT COUNT(*) AS n FROM clicks WHERE status = ?", status))?.n ?? 0
+  );
+  const rows = await q<ClickReviewRow>(
     `SELECT k.*, cp.username, c.title AS campaign_title
      FROM clicks k
      JOIN creator_profiles cp ON cp.user_id = k.user_id
      JOIN campaigns c ON c.id = k.campaign_id
      WHERE k.status = ?
-     ORDER BY k.created_at DESC LIMIT ?`,
+     ORDER BY k.created_at DESC LIMIT ? OFFSET ?`,
     status,
-    limit
+    size,
+    (safePage - 1) * size
   );
+  return { rows, total, page: safePage, pageSize: size };
 }
 
-/** Admin override: move a click to qualified/rejected and fix all counters. Logged. */
+export interface ReviewOptions {
+  /** Explicit correction of FINAL results (logged separately; reason required). */
+  correction?: boolean;
+}
+
+/**
+ * Move a click to qualified/rejected and keep every derived number consistent:
+ *  - state check + conditional UPDATE inside one transaction behind the
+ *    campaign's exclusive lock (no double-apply under concurrent reviews);
+ *  - `last_qualified_at` is re-derived from the click log (tie-break rule);
+ *  - audit row in the same transaction;
+ *  - ended campaigns: provisional results are re-derived; FINAL results are
+ *    untouchable without an explicit correction.
+ */
 export async function reviewClick(
   clickId: string,
   newStatus: "qualified" | "rejected",
   adminId: string,
-  reason: string
+  reason: string,
+  opts: ReviewOptions = {}
 ) {
-  const click = await one<Click>("SELECT * FROM clicks WHERE id = ?", clickId);
-  if (!click) throw new Error("الزيارة غير موجودة");
-  if (click.status === newStatus) return;
-  const link = (await one<TrackingLink>(
-    "SELECT * FROM tracking_links WHERE id = ?",
-    click.tracking_link_id
-  ))!;
   await tx(async () => {
-    // Reverse old status counters (keep total_clicks — the click still happened).
-    const oldCol =
-      click.status === "qualified"
-        ? "qualified_count"
-        : click.status === "rejected"
-          ? "rejected_count"
-          : "pending_count";
-    await run(`UPDATE campaign_participants SET ${oldCol} = ${oldCol} - 1 WHERE id = ?`, link.participant_id);
-    const newCol = newStatus === "qualified" ? "qualified_count" : "rejected_count";
-    await run(
-      `UPDATE campaign_participants SET ${newCol} = ${newCol} + 1${
-        newStatus === "qualified" ? ", last_qualified_at = ?" : ""
-      } WHERE id = ?`,
-      ...(newStatus === "qualified" ? [click.created_at, link.participant_id] : [link.participant_id])
-    );
-    const day = dayKey(click.created_at);
-    const oldStat =
-      click.status === "qualified" ? "qualified" : click.status === "rejected" ? "rejected" : "pending";
-    const newStat = newStatus === "qualified" ? "qualified" : "rejected";
-    await run(
-      `UPDATE campaign_daily_stats SET ${oldStat} = ${oldStat} - 1, ${newStat} = ${newStat} + 1
-       WHERE campaign_id = ? AND day = ?`,
-      click.campaign_id,
-      day
-    );
-    await run(
-      "UPDATE clicks SET status = ?, reject_reason = ? WHERE id = ?",
+    const before = await one<Click>("SELECT * FROM clicks WHERE id = ?", clickId);
+    if (!before) throw new DomainError("الزيارة غير موجودة");
+    await txSerializeOn(campaignLockKey(before.campaign_id));
+    const click = (await one<Click>("SELECT * FROM clicks WHERE id = ?", clickId))!;
+    if (click.status === newStatus) return;
+
+    const campaign = (await one<{ status: string; results_status: string; title: string; id: string }>(
+      "SELECT id, status, results_status, title FROM campaigns WHERE id = ?",
+      click.campaign_id
+    ))!;
+    if (campaign.results_status === "final" && !opts.correction)
+      throw new DomainError("نتائج هذه الحملة مثبتة — استخدم «تصحيح النتائج» الصريح مع سبب موثق");
+    if (opts.correction && !reason.trim()) throw new DomainError("سبب التصحيح مطلوب");
+
+    const changed = await execute(
+      "UPDATE clicks SET status = ?, reject_reason = ? WHERE id = ? AND status = ?",
       newStatus,
       newStatus === "rejected" ? "admin_rejected" : null,
-      clickId
+      clickId,
+      click.status
     );
+    if (changed !== 1) throw new DomainError("تغيرت حالة الزيارة أثناء المراجعة — أعد التحميل");
+
+    const link = (await one<TrackingLink>("SELECT * FROM tracking_links WHERE id = ?", click.tracking_link_id))!;
+    await applyReviewCounters(link, click, newStatus);
+    await logAdminAction(
+      adminId,
+      opts.correction ? `click_correction_${newStatus}` : `click_review_${newStatus}`,
+      "click",
+      clickId,
+      reason
+    );
+
+    if (campaign.status === "ended") {
+      const r = await recomputeStandings(campaign.id, adminId);
+      if (campaign.results_status === "final") {
+        const full = await getCampaign(campaign.id);
+        if (full) await notifyWinners(full, r);
+      }
+    }
   });
-  await logAdminAction(adminId, `click_review_${newStatus}`, "click", clickId, reason);
+}
+
+/** Counter + daily-stat deltas for a status change; last_qualified_at from the click log. */
+async function applyReviewCounters(link: TrackingLink, click: Click, newStatus: ClickStatus) {
+  const colOf = (s: ClickStatus) =>
+    s === "qualified" ? "qualified_count" : s === "rejected" ? "rejected_count" : "pending_count";
+  await run(
+    `UPDATE campaign_participants
+     SET ${colOf(click.status)} = ${colOf(click.status)} - 1,
+         ${colOf(newStatus)} = ${colOf(newStatus)} + 1,
+         last_qualified_at = (SELECT MAX(created_at) FROM clicks WHERE tracking_link_id = ? AND status = 'qualified')
+     WHERE id = ?`,
+    link.id,
+    link.participant_id
+  );
+  const statOf = (s: ClickStatus) => (s === "qualified" ? "qualified" : s === "rejected" ? "rejected" : "pending");
+  await run(
+    `UPDATE campaign_daily_stats SET ${statOf(click.status)} = ${statOf(click.status)} - 1,
+       ${statOf(newStatus)} = ${statOf(newStatus)} + 1
+     WHERE campaign_id = ? AND day = ?`,
+    click.campaign_id,
+    dayKey(click.created_at)
+  );
+}
+
+export type AutoResolveOutcome = "qualified" | "pending_review" | "rejected" | "unchanged" | "deferred";
+
+/**
+ * Re-evaluates ONE click held as `ip_unverified` now that a network verdict
+ * may exist. This is NOT the admin override: the click goes through the full
+ * fraud pipeline again (eligibility, bot/automation, rate, session/device
+ * dedup, device cap, volume, sec-fetch) using the request facts stored with
+ * it, with its own row excluded from the counts, inside one transaction that
+ * holds the campaign lock exclusively plus the ip/session/device locks (same
+ * order as recordClick) — so two duplicates re-evaluated concurrently can
+ * never both qualify, and a live click cannot slip in between.
+ *  - clean verdict + pipeline says qualified → qualified (system-logged);
+ *  - pipeline says pending for another reason → stays pending with THAT reason;
+ *  - pipeline says rejected (e.g. duplicate) → rejected;
+ *  - risky verdict → stays pending as `risky_ip`;
+ *  - campaign results FINAL → left for the admin ("deferred").
+ * Ended (provisional) campaigns get their standings recomputed in the same transaction.
+ */
+export async function autoResolveHeldClick(clickId: string): Promise<AutoResolveOutcome> {
+  await ensureSystemActor();
+  return tx(async () => {
+    const before = await one<Click>("SELECT * FROM clicks WHERE id = ?", clickId);
+    if (!before || before.status !== "pending_review" || before.reject_reason !== "ip_unverified") return "unchanged";
+    await txSerializeOn(campaignLockKey(before.campaign_id));
+    await txSerializeOn(`click-ip:${before.campaign_id}:${before.ip_hash}`);
+    await txSerializeOn(`click-sess:${before.campaign_id}:${before.session_id}`);
+    await txSerializeOn(`click-dev:${before.campaign_id}:${before.device_hash ?? ""}`);
+    // Re-read under the locks: a concurrent resolver may have handled it already.
+    const click = await one<Click>("SELECT * FROM clicks WHERE id = ?", clickId);
+    if (!click || click.status !== "pending_review" || click.reject_reason !== "ip_unverified") return "unchanged";
+
+    const intel = await getIpIntel(click.ip_hash);
+    if (!intel) return "unchanged";
+    const campaign = (await one<{ id: string; status: string; results_status: string; title: string }>(
+      "SELECT id, status, results_status, title FROM campaigns WHERE id = ?",
+      click.campaign_id
+    ))!;
+    if (campaign.results_status === "final") return "deferred";
+    if (Number(intel.risky)) {
+      await run("UPDATE clicks SET reject_reason = 'risky_ip' WHERE id = ? AND reject_reason = 'ip_unverified'", click.id);
+      return "pending_review";
+    }
+
+    const link = (await one<LinkContext>(
+      `SELECT t.*, p.excluded, u.status AS user_status, u.participation_status
+       FROM tracking_links t
+       JOIN campaign_participants p ON p.id = t.participant_id
+       JOIN users u ON u.id = t.user_id
+       WHERE t.id = ?`,
+      click.tracking_link_id
+    ))!;
+    const eligible =
+      Number(link.excluded) === 0 && link.user_status === "active" && link.participation_status === "active";
+    const sig = parseSignals(click.signals);
+    const v = !eligible
+      ? { status: "rejected" as const, reason: "ineligible" }
+      : await classifyClick({
+          campaignId: click.campaign_id,
+          ipHash: click.ip_hash,
+          sessionId: click.session_id,
+          deviceHash: click.device_hash ?? "",
+          userAgent: click.user_agent,
+          // Missing stored facts are never assumed clean (legacy rows → review).
+          hasSecFetch: sig.sf === true,
+          webdriver: truthyFlag(sig.wd),
+          nowMs: Number(click.created_at),
+          intelNowMs: Date.now(),
+          excludeClickId: click.id,
+        });
+
+    if (v.status === "pending_review") {
+      if (v.reason === "ip_unverified") return "unchanged";
+      await run(
+        "UPDATE clicks SET reject_reason = ? WHERE id = ? AND status = 'pending_review' AND reject_reason = 'ip_unverified'",
+        v.reason,
+        click.id
+      );
+      await logAdminAction(SYSTEM_ACTOR_ID, "click_auto_hold", "click", click.id, `auto: ${v.reason}`);
+      return "pending_review";
+    }
+
+    const prev = v.status === "qualified" ? await currentLeader(click.campaign_id) : null;
+    const changed = await execute(
+      "UPDATE clicks SET status = ?, reject_reason = ? WHERE id = ? AND status = 'pending_review' AND reject_reason = 'ip_unverified'",
+      v.status,
+      v.reason,
+      click.id
+    );
+    if (changed !== 1) return "unchanged";
+    await applyReviewCounters(link, click, v.status);
+    await logAdminAction(
+      SYSTEM_ACTOR_ID,
+      `click_auto_${v.status}`,
+      "click",
+      click.id,
+      v.status === "qualified" ? "auto: network verdict clean, pipeline passed" : `auto: ${v.reason}`
+    );
+    if (campaign.status === "ended") {
+      await recomputeStandings(campaign.id, SYSTEM_ACTOR_ID); // provisional only (final → deferred above)
+    } else if (v.status === "qualified") {
+      await notifyRankChanges(click.campaign_id, click.user_id, prev);
+    }
+    return v.status;
+  });
+}
+
+/**
+ * Clicks held as `ip_unverified` are re-evaluated automatically once a fresh
+ * network verdict exists (see autoResolveHeldClick). Oldest first, so among
+ * duplicates the earliest click is the one that can qualify. Runs from the
+ * lifecycle sweep and right after an IP lookup completes.
+ */
+export async function reevaluateIpUnverified(ipHash?: string, limit = 200): Promise<number> {
+  const rows = await q<{ id: string }>(
+    `SELECT id FROM clicks WHERE status = 'pending_review' AND reject_reason = 'ip_unverified'
+     ${ipHash ? "AND ip_hash = ?" : ""} ORDER BY created_at ASC, id ASC LIMIT ?`,
+    ...(ipHash ? [ipHash, limit] : [limit])
+  );
+  let resolved = 0;
+  for (const row of rows) {
+    if ((await autoResolveHeldClick(row.id)) === "qualified") resolved += 1;
+  }
+  return resolved;
 }

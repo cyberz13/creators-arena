@@ -29,7 +29,8 @@ export function RegisterForm({ categories }: { categories: Category[] }) {
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <Label htmlFor="password">كلمة المرور</Label>
-          <Input id="password" name="password" type="password" dir="ltr" required minLength={8} autoComplete="new-password" />
+          <Input id="password" name="password" type="password" dir="ltr" required minLength={10} autoComplete="new-password" />
+          <p className="mt-1 text-xs text-zinc-500">10 أحرف على الأقل مع حروف وأرقام</p>
         </div>
         <div>
           <Label htmlFor="phone">رقم الجوال (اختياري)</Label>

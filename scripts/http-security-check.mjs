@@ -19,6 +19,7 @@ import { DatabaseSync } from "node:sqlite";
 process.chdir(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const PORT = Number(process.env.HTTP_CHECK_PORT ?? 3417);
 const BASE = `http://127.0.0.1:${PORT}`;
+fs.mkdirSync(path.join(process.cwd(), "data"), { recursive: true }); // git-ignored; absent in a fresh CI checkout
 const dbDir = fs.mkdtempSync(path.join(process.cwd(), "data", "http-check-"));
 const dbPath = path.join(dbDir, "check.db");
 
@@ -50,6 +51,8 @@ const results = [];
 function check(name, ok, detail = "") {
   results.push({ name, ok, detail });
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? " — " + detail : ""}`);
+  // GitHub Actions: a failing check becomes an annotation (visible without opening the log).
+  if (!ok && process.env.GITHUB_ACTIONS) console.log(`::error title=http-security-check::${name}${detail ? " — " + detail : ""}`);
 }
 
 async function waitReady() {

@@ -227,12 +227,29 @@ try {
       runWorker("payout", { payoutId: first.id, status: "paid", adminId }),
     ]);
     check(race[0].ok === true, "G: disable applied" + (race[0].error ? " — " + race[0].error : ""));
-    const rank1 = await one("SELECT id, user_id, status FROM payouts WHERE campaign_id = $1 AND prize_rank = 1", [campaignId]);
-    const disabledPaid = await one("SELECT COUNT(*)::int AS n FROM payouts WHERE campaign_id = $1 AND user_id = $2 AND status IN ('approved','paid')", [campaignId, links[0].uid]);
-    check(disabledPaid.n === 0, `G: the disabled creator never holds an approved/paid payout (${disabledPaid.n})`);
-    check(!!rank1 && rank1.user_id === links[1].uid, `G: rank-1 payout reassigned to the next eligible creator (owner=${rank1?.user_id === links[1].uid ? "next" : "other"}, status=${rank1?.status})`);
+    // Two consistent end states exist, depending on which process reached the campaign lock first:
+    //  (1) disable first → the unpaid payout is reassigned (pending) to the next eligible creator and the
+    //      late approve/pay attempts on it fail (wrong status or ineligible beneficiary);
+    //  (2) pay first → money left before the disable; the paid entitlement is NEVER moved and the
+    //      conflict is recorded as results_conflict for manual settlement.
+    // What must never happen: the disabled creator holding an approved payout, a paid row being
+    // reassigned, or two rank-1 payouts.
+    const rank1Rows = await sql.unsafe("SELECT id, user_id, status FROM payouts WHERE campaign_id = $1 AND prize_rank = 1", [campaignId]);
+    check(rank1Rows.length === 1, `G: exactly one rank-1 payout row (${rank1Rows.length})`);
+    const rank1 = rank1Rows[0];
+    const approvedDisabled = await one("SELECT COUNT(*)::int AS n FROM payouts WHERE campaign_id = $1 AND user_id = $2 AND status = 'approved'", [campaignId, links[0].uid]);
+    check(approvedDisabled.n === 0, `G: the disabled creator never holds an APPROVED (unpaid) payout (${approvedDisabled.n})`);
     const recomputed = await one("SELECT COUNT(*)::int AS n FROM admin_actions WHERE action = 'results_recomputed' AND target_id = $1", [campaignId]);
-    check(recomputed.n === 1, "G: recompute audited once");
+    const conflict = await one("SELECT COUNT(*)::int AS n FROM admin_actions WHERE action = 'results_conflict' AND target_id = $1", [campaignId]);
+    if (rank1.user_id === links[0].uid) {
+      // pay won the race: the paid entitlement is untouchable and the disable logged a conflict
+      check(rank1.status === "paid" && conflict.n === 1 && recomputed.n === 0, `G(pay won): paid entitlement kept for its payee and the conflict audited (status=${rank1.status}, conflict=${conflict.n}, recomputed=${recomputed.n})`);
+    } else {
+      // disable won: the payout was reassigned to the next eligible creator (who may then legitimately be approved/paid)
+      check(rank1.user_id === links[1].uid && ["pending", "approved", "paid"].includes(rank1.status) && recomputed.n === 1 && conflict.n === 0, `G(disable won): payout reassigned to the next eligible creator, recompute audited once (owner=${rank1.user_id === links[1].uid ? "next" : "other"}, status=${rank1.status}, recomputed=${recomputed.n}, conflict=${conflict.n})`);
+    }
+    const paidNotesToDisabled = await one("SELECT COUNT(*)::int AS n FROM notifications WHERE campaign_id = $1 AND user_id = $2 AND type = 'prize_paid'", [campaignId, links[0].uid]);
+    check((rank1.status === "paid" && rank1.user_id === links[0].uid) === (paidNotesToDisabled.n === 1), `G: the disabled creator has a paid notification iff money actually went to them (${paidNotesToDisabled.n})`);
   }
 
   // ---- Scenario H: transaction retry semantics on real connection loss

@@ -12,9 +12,8 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      # Tests use in-memory SQLite; the build never touches a real database.
-      NODE_ENV: test
+    # NODE_ENV is set per step: only the test step runs as "test". A job-wide
+    # NODE_ENV=test would be inlined into the production build (HSTS etc.).
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,6 +27,8 @@ jobs:
         run: npm run typecheck
       - name: Unit & integration tests (SQLite)
         run: npm test
+        env:
+          NODE_ENV: test
       - name: Production build
         run: npm run build
       - name: Dependency audit (fails on high/critical)
